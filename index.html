@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Premium East Midlands Property AI Data Visualiser</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<header class="wrap masthead">
+  <div class="kicker">Land Registry price paid · July 2010 – June 2026</div>
+  <h1>Premium East&nbsp;Midlands Property AI Data Visualiser</h1>
+  <p class="standfirst">
+    Every sale of a home at <strong>£550,000 or more</strong> across eight districts of Nottinghamshire,
+    Lincolnshire, Leicestershire and Rutland. Because the extract starts at £550k, a rising
+    <strong>count of sales</strong> is the truest signal of an area heating up — the median here is the
+    median of the top end, not of the whole market.
+  </p>
+</header>
+
+<div class="controls">
+  <div class="controls-inner" id="controls">
+
+    <div class="ctl range">
+      <span class="ctl-label">Years</span>
+      <input type="range" id="yrFrom" min="2010" max="2026" step="1" value="2010" aria-label="First year">
+      <span class="yr" id="yrFromV">2010</span>
+      <span style="color:var(--ink-3)">–</span>
+      <input type="range" id="yrTo" min="2010" max="2026" step="1" value="2026" aria-label="Last year">
+      <span class="yr" id="yrToV">2026</span>
+    </div>
+
+    <div class="ctl">
+      <span class="ctl-label">County</span>
+      <select id="fCounty" aria-label="County"><option value="">All counties</option></select>
+    </div>
+
+    <div class="ctl">
+      <span class="ctl-label">District</span>
+      <select id="fDistrict" aria-label="District"><option value="">All 8 districts</option></select>
+    </div>
+
+    <div class="ctl">
+      <span class="ctl-label">Village</span>
+      <input type="search" id="fVillage" class="txt" list="villageList" autocomplete="off"
+             placeholder="Any village" aria-label="Village or settlement">
+      <datalist id="villageList"></datalist>
+    </div>
+
+    <div class="ctl">
+      <span class="ctl-label">Type</span>
+      <select id="fType" aria-label="Property type"><option value="">All types</option></select>
+    </div>
+
+    <div class="ctl">
+      <span class="ctl-label">Band</span>
+      <div class="chip-row" id="fBands"></div>
+    </div>
+
+    <div class="ctl">
+      <span class="ctl-label">Rows</span>
+      <div class="chip-row">
+        <button class="chip" id="fSearch" aria-pressed="false">Search area</button>
+        <button class="chip" id="fNew" aria-pressed="false">New build</button>
+      </div>
+    </div>
+
+    <button class="btn btn-ghost" id="reset">Reset</button>
+
+    <div class="slice-count" id="sliceCount"></div>
+  </div>
+</div>
+
+<main class="wrap">
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="pulse"    aria-selected="true">Pulse</button>
+    <button class="tab" role="tab" data-view="map"      aria-selected="false">Map</button>
+    <button class="tab" role="tab" data-view="momentum" aria-selected="false">Momentum</button>
+    <button class="tab" role="tab" data-view="value"    aria-selected="false">Value</button>
+    <button class="tab" role="tab" data-view="rhythm"   aria-selected="false">Rhythm</button>
+    <button class="tab" role="tab" data-view="sales"    aria-selected="false">Sales</button>
+  </div>
+
+  <!-- ============================================================ PULSE -->
+  <section class="view" id="v-pulse" role="tabpanel">
+    <div class="hero mb">
+      <div class="card hero-figure">
+        <div class="label">Sales at £550k+</div>
+        <div class="value" id="heroValue">—</div>
+        <div class="note" id="heroNote"></div>
+      </div>
+      <div class="tiles" id="tiles"></div>
+    </div>
+
+    <div class="card mb">
+      <div class="card-head">
+        <h2>The wave</h2>
+        <p class="sub">Sales per quarter, with a four-quarter rolling average. The 2021 stamp-duty-holiday
+          surge and what came after are the two facts that shape everything else on this page.</p>
+      </div>
+      <div id="waveChart"></div>
+      <button class="tbl-toggle" data-table="waveChart">Show table</button>
+    </div>
+
+    <div class="grid g-2 mb">
+      <div class="card">
+        <div class="card-head">
+          <h2>What £550k+ costs</h2>
+          <p class="sub">Median sale price by year, with the middle half of the market (25th–75th percentile) shaded.</p>
+        </div>
+        <div id="priceChart"></div>
+        <button class="tbl-toggle" data-table="priceChart">Show table</button>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Heating and cooling</h2>
+          <p class="sub" id="moversSub"></p>
+        </div>
+        <div id="moversChart"></div>
+        <button class="tbl-toggle" data-table="moversChart">Show table</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 id="smTitle">Eight districts, one story each</h2>
+        <p class="sub">Sales per year in every district on its own scale — shape, not size. The peak year is marked.</p>
+      </div>
+      <div id="smallMultiples"></div>
+    </div>
+  </section>
+
+  <!-- ============================================================== MAP -->
+  <section class="view" id="v-map" role="tabpanel" hidden>
+    <div class="card mb">
+      <div class="card-head" style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;justify-content:space-between">
+        <div>
+          <h2>The geography of the top end</h2>
+          <p class="sub" id="mapSub"></p>
+        <p class="sub" style="margin-top:4px">Towns and cities are marked for orientation only — no sale
+          is attributed to them.</p>
+        </div>
+        <div class="chip-row" id="mapMetric"></div>
+      </div>
+      <div class="grid g-map">
+        <div class="map-wrap">
+          <div id="mapChart"></div>
+          <div class="scale" id="mapScale" style="margin-top:6px"></div>
+        </div>
+        <div>
+          <div class="ctl-label" style="margin-bottom:8px" id="rankTitle">Ranked</div>
+          <div class="rank-list" id="mapRank"></div>
+        </div>
+      </div>
+      <button class="tbl-toggle" data-table="mapChart" style="margin-top:14px">Show table</button>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 id="zoneTitle">Inside the districts</h2>
+        <p class="sub">Every settlement zone, grouped by district and sized by the number of £550k+ sales.
+          Colour is the share of those sales at £1m and over, so a big dark block is a busy market with
+          little genuine prime depth, and a small bright one is a pocket that punches above its volume.</p>
+      </div>
+      <div id="treemap"></div>
+      <div class="scale" id="treeScale" style="margin-top:10px"></div>
+      <button class="tbl-toggle" data-table="treemap" style="margin-top:12px">Show table</button>
+    </div>
+  </section>
+
+  <!-- ========================================================= MOMENTUM -->
+  <section class="view" id="v-momentum" role="tabpanel" hidden>
+    <div class="card mb">
+      <div class="card-head">
+        <h2>Which way is each area travelling?</h2>
+        <p class="sub" id="scatterSub"></p>
+      </div>
+      <div id="scatter"></div>
+      <button class="tbl-toggle" data-table="scatter">Show table</button>
+    </div>
+
+    <div class="card mb">
+      <div class="card-head">
+        <h2>The movers table</h2>
+        <p class="sub">Sortable. Click any column head. The trend column is sales per year across the
+          selected range, on each row's own scale.</p>
+      </div>
+      <div class="tbl-scroll" id="moversTable"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>Rank shuffle</h2>
+        <p class="sub">Where each district sat in the volume table, year by year. Lines that climb are
+          districts taking a bigger share of the region's £550k+ trade.</p>
+      </div>
+      <div id="bump"></div>
+      <button class="tbl-toggle" data-table="bump">Show table</button>
+    </div>
+  </section>
+
+  <!-- ============================================================ VALUE -->
+  <section class="view" id="v-value" role="tabpanel" hidden>
+    <div class="card mb">
+      <div class="card-head">
+        <h2>What the money buys, area by area</h2>
+        <p class="sub">Each row is one area's price distribution: the thin line spans the 10th–90th percentile,
+          the thick bar the middle half, the dot is the median. Long bars mean a wide, mixed top end;
+          short bars mean a narrow, predictable one. The price axis is logarithmic, so a handful of
+          multi-million sales in one village cannot flatten the differences that matter everywhere else.</p>
+        <p class="sub" id="distNote" style="margin-top:4px;color:var(--ink-3)"></p>
+      </div>
+      <div id="distChart"></div>
+      <button class="tbl-toggle" data-table="distChart">Show table</button>
+    </div>
+
+    <div class="grid g-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>Premium and discount</h2>
+          <p class="sub" id="premSub"></p>
+        </div>
+        <div id="premChart"></div>
+        <button class="tbl-toggle" data-table="premChart">Show table</button>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>The price ladder</h2>
+          <p class="sub">How each district's £550k+ sales split across price bands. Districts with a fat
+            £1m+ share have a genuinely deep prime market rather than a thin tail.</p>
+        </div>
+        <div id="ladderChart"></div>
+        <div class="legend" id="ladderLegend" style="margin-top:12px"></div>
+        <button class="tbl-toggle" data-table="ladderChart" style="margin-top:10px">Show table</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- =========================================================== RHYTHM -->
+  <section class="view" id="v-rhythm" role="tabpanel" hidden>
+    <div class="card mb">
+      <div class="card-head">
+        <h2>Sixteen years, month by month</h2>
+        <p class="sub">Every cell is one month's count of £550k+ sales — darker is quieter, brighter is busier.
+          Read across for a year's shape, down for a month's history. The dark notch at April and May 2020
+          is the first lockdown; the brightest cell on the grid is June 2021, the stamp-duty deadline.</p>
+      </div>
+      <div id="heatGrid"></div>
+      <div class="scale" id="heatScale" style="margin-top:10px"></div>
+      <button class="tbl-toggle" data-table="heatGrid" style="margin-top:12px">Show table</button>
+    </div>
+
+    <div class="grid g-2">
+      <div class="card">
+        <div class="card-head">
+          <h2>When deals complete</h2>
+          <p class="sub">Share of all sales in the slice falling in each calendar month. Completion clusters
+            at quarter-ends and thins in the new year — useful for timing an offer.</p>
+        </div>
+        <div id="seasonChart"></div>
+        <button class="tbl-toggle" data-table="seasonChart">Show table</button>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h2>Distance from the peak</h2>
+          <p class="sub" id="peakSub"></p>
+        </div>
+        <div id="peakChart"></div>
+        <button class="tbl-toggle" data-table="peakChart">Show table</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ SALES -->
+  <section class="view" id="v-sales" role="tabpanel" hidden>
+    <div class="card">
+      <div class="card-head" style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start;justify-content:space-between">
+        <div>
+          <h2>Every sale in the slice</h2>
+          <p class="sub" id="salesSub"></p>
+        </div>
+        <div class="ctl">
+          <input type="search" id="salesSearch" placeholder="Search address, village, postcode…"
+                 style="font-family:inherit;font-size:12.5px;color:var(--ink);background:var(--surface-2);border:1px solid var(--rule);border-radius:7px;padding:7px 11px;min-width:280px">
+        </div>
+      </div>
+      <div class="tbl-scroll" id="salesTable"></div>
+    </div>
+  </section>
+
+  <div class="footer">
+    <p style="margin:0 0 6px">
+      Source: HM Land Registry Price Paid Data, filtered to sales of £550,000 and over completed between
+      1 July 2010 and 22 June 2026. Of the 11,460 records in that extract, <strong>2,496 are set aside
+      before anything is counted</strong> and 8,964 sales of a single dwelling remain: 2,454 are not homes
+      at all but commercial, agricultural or mixed-use property typed “Other” — the £111m Butlins site at
+      Skegness among them; 19 are one property split across two titles at a single price, such as a
+      farmhouse sold with its cottage; 16 are duplicates of another record; and 7 are priced beyond any
+      verified sale of their own property type, which makes them land or an apportioned portfolio price
+      rather than a house — an “£8.5m terraced house” in Melton Mowbray, for instance. The categories are
+      mutually exclusive, so they sum exactly to 2,496.
+    </p>
+    <p style="margin:0 0 6px">
+      Contains HM Land Registry data © Crown copyright and database right 2026. This data is licensed
+      under the <a href="https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/"
+      rel="noopener" target="_blank">Open Government Licence v3.0</a>.
+      Postcode-district boundaries from the open <em>uk-postcode-polygons</em> dataset. The towns and
+      cities on the map are orientation markers, not data — each one is checked at build time to fall
+      inside the postcode district it belongs to.
+    </p>
+    <p style="margin:0">
+      Caveats worth holding on to: the £550k floor means every median is a top-end median; Price Paid
+      excludes most new-build plot sales made under option agreements and any transfer not lodged for
+      registration; 2026 covers January to June only and is marked as partial throughout; three postcode
+      districts (DN17, LE67 and the non-geographic NG80) drop out entirely because every £550k+ record
+      they held was non-residential. Land Registry category B sales — repossessions, buy-to-lets and
+      purchases by companies — are <em>kept</em>, because category B means an unverified entry rather than
+      a below-market price, and these sit on the same price distribution as the verified ones.
+    </p>
+  </div>
+</main>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
