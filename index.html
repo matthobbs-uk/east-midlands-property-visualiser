@@ -15,9 +15,10 @@
   <h1>Premium East&nbsp;Midlands Property AI Data Visualiser</h1>
   <p class="standfirst">
     Every sale of a home at <strong>£550,000 or more</strong> across eight districts of Nottinghamshire,
-    Lincolnshire, Leicestershire and Rutland. Because the extract starts at £550k, a rising
-    <strong>count of sales</strong> is the truest signal of an area heating up — the median here is the
-    median of the top end, not of the whole market.
+    Lincolnshire, Leicestershire and Rutland. The fixed £550k floor distorts both headline numbers:
+    the median looks flat because rising prices push ever more modest houses over the threshold, and
+    the sale count rises for the same reason. For what prices actually did, read
+    <strong>the same house sold twice</strong> — <span id="standfirstRsi">the repeat-sales index</span>.
   </p>
 </header>
 
@@ -44,9 +45,9 @@
     </div>
 
     <div class="ctl">
-      <span class="ctl-label">Village</span>
+      <span class="ctl-label">Area</span>
       <input type="search" id="fVillage" class="txt" list="villageList" autocomplete="off"
-             placeholder="Any village" aria-label="Village or settlement">
+             placeholder="Village, zone or postcode" aria-label="Village, settlement zone or postcode district">
       <datalist id="villageList"></datalist>
     </div>
 
@@ -103,6 +104,24 @@
       </div>
       <div id="waveChart"></div>
       <button class="tbl-toggle" data-table="waveChart">Show table</button>
+    </div>
+
+    <div class="card mb">
+      <div class="card-head">
+        <h2>Has the price actually moved?</h2>
+        <p class="sub">The median sale barely shifts across sixteen years — but that is the £550,000 floor
+          at work, not the market. As prices rise, ever more modest houses cross the threshold and drag
+          the observed median back down. The honest measure is <strong>the same house sold twice</strong>,
+          which holds size, plot and street constant. Both lines are set to 100 in 2013; the gap between
+          them is the illusion.</p>
+        <p class="sub" style="margin-top:4px">
+          <span class="pill" id="rsiScope">whole region</span>
+          This chart alone ignores your filters — below district level there are too few repeat sales to
+          measure anything.</p>
+      </div>
+      <div id="indexChart"></div>
+      <div id="rsiReadout" class="rsi-readout"></div>
+      <button class="tbl-toggle" data-table="indexChart">Show table</button>
     </div>
 
     <div class="grid g-2 mb">
@@ -257,8 +276,7 @@
       <div class="card">
         <div class="card-head">
           <h2>When deals complete</h2>
-          <p class="sub">Share of all sales in the slice falling in each calendar month. Completion clusters
-            at quarter-ends and thins in the new year — useful for timing an offer.</p>
+          <p class="sub" id="seasonSub">Share of all sales in the slice falling in each calendar month.</p>
         </div>
         <div id="seasonChart"></div>
         <button class="tbl-toggle" data-table="seasonChart">Show table</button>
@@ -282,9 +300,13 @@
           <h2>Every sale in the slice</h2>
           <p class="sub" id="salesSub"></p>
         </div>
-        <div class="ctl">
-          <input type="search" id="salesSearch" placeholder="Search address, village, postcode…"
-                 style="font-family:inherit;font-size:12.5px;color:var(--ink);background:var(--surface-2);border:1px solid var(--rule);border-radius:7px;padding:7px 11px;min-width:280px">
+        <div class="ctl" style="gap:8px;flex-wrap:wrap">
+          <input type="search" id="salesSearch" class="txt" placeholder="Search address, village, postcode…"
+                 style="min-width:250px;width:auto">
+          <button class="chip" id="fRepeat" aria-pressed="false"
+                  title="Only properties that appear more than once in the file">Sold more than once</button>
+          <button class="chip" id="fToday" aria-pressed="false">Show in today’s money</button>
+          <button class="btn" id="dlCsv">Download CSV</button>
         </div>
       </div>
       <div class="tbl-scroll" id="salesTable"></div>

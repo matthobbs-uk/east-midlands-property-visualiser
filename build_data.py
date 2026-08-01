@@ -276,7 +276,8 @@ def build_sales():
     rows.sort(key=lambda r: (r["date"], r["price"]))
 
     districts, zones, ptypes, pcds, settlements = [], [], [], [], []
-    idx = {"d": {}, "z": {}, "t": {}, "p": {}, "s": {}}
+    streets, sectors = [], []
+    idx = {"d": {}, "z": {}, "t": {}, "p": {}, "s": {}, "r": {}, "c": {}}
 
     def intern(bucket, store, value):
         if value not in idx[bucket]:
@@ -285,20 +286,32 @@ def build_sales():
         return idx[bucket][value]
 
     out = {k: [] for k in (
-        "date", "price", "district", "zone", "ptype", "pcd", "settlement",
-        "flags", "address", "txn",
+        "date", "day", "price", "district", "zone", "ptype", "pcd", "sector",
+        "street", "settlement", "flags", "address", "txn",
     )}
 
     for r in rows:
         y, m, d = (int(x) for x in r["date"].split("-"))
-        # months since 2010-01, so a month index is a single small integer
+        # months since 2010-01, so a month index is a single small integer;
+        # the day rides alongside so an export can rebuild the exact date
         out["date"].append((y - 2010) * 12 + (m - 1))
+        out["day"].append(d)
         out["price"].append(int(r["price"]))
         out["district"].append(intern("d", districts, title_case(r["district"])))
         out["zone"].append(intern("z", zones, zone_label(r["settlement_zone"])))
         out["ptype"].append(intern("t", ptypes, r["property_type"]))
         out["pcd"].append(intern("p", pcds, r["postcode_district"] or "—"))
         out["settlement"].append(intern("s", settlements, title_case(r["settlement"])))
+        out["street"].append(intern("r", streets, title_case(r["street"]) if r["street"] else "—"))
+        # postcode sector: the outward code plus the first digit of the inward,
+        # e.g. NG2 6. It splits a big town that is one row at every other grain.
+        pc = (r["postcode"] or "").strip()
+        sector = "—"
+        if " " in pc:
+            out_code, in_code = pc.rsplit(" ", 1)
+            if in_code:
+                sector = out_code + " " + in_code[0]
+        out["sector"].append(intern("c", sectors, sector))
 
         flags = 0
         if r["residential_comparable"] == "yes":
@@ -325,6 +338,8 @@ def build_sales():
             "zone": zones,
             "ptype": ptypes,
             "pcd": pcds,
+            "sector": sectors,
+            "street": streets,
             "settlement": settlements,
         },
     }

@@ -19,35 +19,71 @@ then open http://localhost:8712.
 ## What's in it
 
 Filters run across the top and scope every chart on every tab at once: year range, county, district,
-village, property type, price band, and three row toggles. The village box is a type-ahead over the
-697 settlements that have a £550k+ sale, and only ever suggests places that exist under your other
-filters. Hover any of them — or tab to it — for a
-plain-English explanation of what it does, what it drops, and how many of the 11,460 rows it keeps.
+area, property type, price band, and two row toggles. The **Area** box is a type-ahead across all 930
+villages, settlement zones, postcode districts and postcode sectors, labelled by kind and ordered
+busiest-first; it only ever suggests places that exist under your other filters. Clicking the map,
+a treemap cell, a bubble or a table row sets the same scope. Hover any control — or tab to it — for a
+plain-English explanation of what it does, what it drops, and how many rows it keeps.
 
 | Tab | What it answers |
 |---|---|
-| **Pulse** | How big is this market, what does it cost, and which way is it going? Quarterly volume with a rolling average, median price with the middle half shaded, the six fastest-heating and fastest-cooling zones, and a small-multiple of all eight districts. |
-| **Map** | Where are the hotspots? A choropleth of the 51 postcode districts you can switch between sales volume, median price, momentum and premium-vs-region, plus a treemap of all 47 settlement zones sized by volume and coloured by prime (£1m+) depth. |
-| **Momentum** | Which areas are heating or cooling? A quadrant scatter of volume change against price change, a sortable movers table with sparklines, and a rank-shuffle chart of the districts year by year. |
-| **Value** | What does the money buy where? Price distributions per area on a log axis, premium and discount against the regional median, and each district's split across price bands. |
+| **Pulse** | How big is this market, what does it cost, and **has the price actually moved?** Quarterly volume, the repeat-sales index against the observed median, median price by year, the fastest-moving zones, and a small-multiple of all eight districts. |
+| **Map** | Where are the hotspots? A choropleth of the 49 postcode districts, switchable between sales volume, median price, momentum and premium, plus a treemap of all 47 settlement zones sized by volume and coloured by prime (£1m+) depth. Click any area to scope the whole app to it. |
+| **Momentum** | Which areas are getting busier, and at what price point? A scatter of change-in-sales against median price, a sortable movers table with sparklines, and a rank-shuffle chart of the districts year by year. |
+| **Value** | What does the money buy where? Price distributions per area on a log axis, premium and discount against the median of whatever is in view, and each district's split across price bands. |
 | **Rhythm** | When do deals happen? A month-by-month heat grid over sixteen years, completion seasonality, and how far each district sits below its own busiest twelve months. |
-| **Sales** | Every transaction in the current slice, sortable and searchable. Click a row to open the Land Registry record. |
+| **Sales** | Every transaction in the slice, sortable and searchable. Click an address for the Land Registry record, or the ↺ badge on a property that has sold more than once for its own price history. Optionally restate past prices in today's money, and download the whole filtered set as CSV. |
 
 Every chart has a **Show table** link giving the same numbers as text, and everything responds to
 hover and keyboard focus.
 
+## The repeat-sales index — the most important thing here
+
+The observed median is flat across sixteen years: £655,000 in 2010, £670,000 in 2025. **That is the
+£550,000 floor, not the market.** As prices rise, progressively more modest houses cross the
+threshold and drag the observed median back down — the share of semis and terraces in the sample
+climbs from 8.4% to 12.2% over the period, which is that effect made visible.
+
+The honest measure is the same house sold twice, which holds size, plot, street and aspect constant.
+832 addresses here sold more than once, giving 863 usable pairs, and `RSI` in `app.js` runs the
+standard repeat-sales regression over them (the method behind Case-Shiller), solved by Gaussian
+elimination with a 160-draw bootstrap for the confidence band.
+
+| 2013 | 2016 | 2019 | 2022 | 2023 | 2026 |
+|---|---|---|---|---|---|
+| 100 | 117 | 128 | 153 | 160 | **158** |
+
+- **A 2019 comparable is +23.7% to today** (90% band +20.3% to +27.2%). The observed median implies
+  +3.1%. On a £750,000 house that is a ~£150,000 error, in the direction that makes you overbid on
+  stale evidence.
+- **Flat since 2023** (−1.5%).
+
+Caveats, which the chart also prints: a pair exists only when *both* sales cleared £550k, so houses
+that grew into the bracket are invisible; extensions and rebuilds are trimmed by discarding any pair
+that more than doubled or more than halved; the chart starts at 2013 because 2010 rests on 18 pairs.
+It is computed **once over the whole region and deliberately ignores your area filter** — below
+district level the pair counts collapse and a per-village index would be noise wearing the authority
+of a line chart.
+
+You can audit it from the browser console: `EM_DEBUG.rsi.level`.
+
 ## Reading the numbers honestly
 
 - **The extract starts at £550,000.** Every median here is the median *of the top end*, not of the
-  market. A rising count of £550k+ sales is the more reliable signal that an area is heating up.
+  market — and note that a rising *count* of £550k+ sales is not a clean signal of a hotter area
+  either, because much of that rise is simply houses crossing a fixed threshold. For price movement,
+  read the repeat-sales index above.
 - **Villages are held to a lower sample bar than larger areas** — 10 sales rather than 20 — because at
   a £550k floor even a well-known village records only a handful of sales in sixteen years. 197 of the
   697 clear it. The Value tab's distribution chart draws the 40 busiest and says so; the table twin
   below it always carries all of them.
 - **Momentum compares two equal windows** — the most recent 36 months against the 36 before them —
   rather than calendar years, so the partial 2026 never distorts a comparison. Areas below 20 sales
-  in the slice, or 5 in either window, are left out as too thin to read.
-- **2026 covers January to June only** and is drawn at reduced opacity in the quarterly chart.
+  in the slice, or 5 in either window, are left out as too thin to read, and the chart says how many
+  qualified. **The y-axis is median price, not change in median price.** A permutation test showed
+  the change-in-median scatter was indistinguishable from chance at this sample size, so it was
+  demoted to a table column; median *level* is a far more stable estimate than median *change*.
+- **2026 covers January to June only**, and is faded in the quarterly chart, dashed in the heat grid and greyed in the district sparklines. Treat it as incomplete: registration lag means it fills in for months afterwards.
 - **The app only ever holds sales of a single dwelling.** `classify()` in `build_data.py` decides
   this at build time and never ships the rest to the browser, so a non-comparable cannot reach a
   chart. 2,496 of the 11,460 records are set aside, leaving 8,964. The four reasons are mutually

@@ -338,6 +338,24 @@ select { padding-right: 26px; }
 .delta-up { color: #7fd47f; }
 .delta-down { color: #f09a9a; }
 
+/* ------------------------------------------------- repeat-sales readouts */
+
+.rsi-readout {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--hairline);
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-top: 16px;
+}
+.rsi-cell { background: var(--surface-2); padding: 13px 15px 11px; }
+.rsi-cell .k { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); font-weight: 650; }
+.rsi-cell .v { font-size: 25px; font-weight: 650; letter-spacing: -0.02em; margin: 6px 0 2px; line-height: 1; }
+.rsi-cell .n { font-size: 11.5px; color: var(--ink-3); }
+
+@media (max-width: 640px) { .rsi-readout { grid-template-columns: minmax(0, 1fr); } }
+
 /* ------------------------------------------------------------------ legend */
 
 .legend { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: center; font-size: 12px; color: var(--ink-2); }
@@ -447,6 +465,44 @@ table.data tbody tr.hi td { background: var(--accent-soft); }
 table.data td .dotkey { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 7px; vertical-align: baseline; }
 table.data .addr { color: var(--ink); font-weight: 500; font-variant-numeric: normal; white-space: normal; min-width: 260px; text-align: left; }
 
+/* repeat-sale badge and the expanded history row */
+
+.repeat-badge {
+  display: inline-block;
+  margin-left: 9px;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(232, 163, 61, 0.4);
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.repeat-badge:hover { background: rgba(232, 163, 61, 0.26); }
+
+tr.history-row td { background: var(--surface-2); padding: 0; }
+.history { padding: 13px 16px 14px; border-left: 2px solid var(--accent); }
+.history .h-title {
+  font-size: 10.5px; letter-spacing: 0.11em; text-transform: uppercase;
+  color: var(--ink-3); font-weight: 650; margin-bottom: 9px;
+}
+.history .h-line {
+  display: flex; gap: 18px; align-items: baseline; padding: 3px 0;
+  font-variant-numeric: tabular-nums; font-size: 12.5px;
+}
+.history .h-date { color: var(--ink-2); min-width: 82px; }
+.history .h-price { color: var(--ink); font-weight: 650; min-width: 92px; }
+.history .h-delta { font-weight: 650; }
+.history .h-note {
+  margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--rule);
+  font-size: 11.5px; color: var(--ink-3); line-height: 1.5; max-width: 78ch;
+  font-variant-numeric: normal;
+}
+
 .tbl-toggle {
   font-size: 11.5px; color: var(--ink-3); background: none; border: none;
   cursor: pointer; text-decoration: underline; text-underline-offset: 3px; padding: 0;
@@ -508,4 +564,14 @@ table.data .addr { color: var(--ink); font-weight: 500; font-variant-numeric: no
 @media (max-width: 780px) {
   :root { --gutter: 18px; }
   .g-2, .g-3, .g-4, .tiles { grid-template-columns: minmax(0, 1fr); }
+  /* the year block is 388px wide and could not wrap, so the whole page
+     scrolled sideways on a phone */
+  .controls-inner { gap: 8px 12px; }
+  .ctl.range { flex: 1 1 100%; }
+  .range input[type="range"] { flex: 1 1 auto; width: auto; min-width: 60px; }
+  .txt { width: 100%; }
+  .ctl { flex-wrap: wrap; }
+  .slice-count { margin-left: 0; flex: 1 1 100%; }
 }
+/* nothing on the page may push the body sideways */
+html, body { max-width: 100%; overflow-x: hidden; }

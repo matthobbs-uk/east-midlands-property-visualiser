@@ -59,6 +59,8 @@ var BANDS = [
 // would empty the view entirely — and the charts say so where it matters.
 var MIN_AREA_SALES = 20;
 var MIN_VILLAGE_SALES = 10;
+var MOVER_FLOOR_LABEL = 12;   // a mover needs this in BOTH windows, else a
+                              // 9 -> 19 zone outranks a 262 -> 182 one
 var MIN_WINDOW_SALES = 5;
 function minSalesFor(grain) { return grain === 'settlement' ? MIN_VILLAGE_SALES : MIN_AREA_SALES; }
 
@@ -132,7 +134,16 @@ function logScale(d0, d1, r0, r1) {
 }
 function priceTicks(lo, hi) {
   var cand = [400e3, 500e3, 600e3, 700e3, 800e3, 900e3, 1e6, 1.25e6, 1.5e6, 2e6, 2.5e6, 3e6, 4e6, 5e6, 7.5e6, 10e6, 20e6];
-  return cand.filter(function (v) { return v >= lo && v <= hi; });
+  var out = cand.filter(function (v) { return v >= lo && v <= hi; });
+  // a narrow range (zone medians all sit between about £570k and £750k) needs
+  // finer steps or the axis renders with two labels
+  if (out.length < 4) {
+    var fine = [];
+    for (var v = 500e3; v <= 1.6e6; v += 50e3) fine.push(v);
+    var f = fine.filter(function (t) { return t >= lo && t <= hi; });
+    if (f.length >= out.length) out = f;
+  }
+  return out;
 }
 
 function niceTicks(min, max, count) {
@@ -148,11 +159,13 @@ function niceTicks(min, max, count) {
 
 // first and last year always, then every third year — but never one that would
 // collide with an end label
-function yearTicks(years) {
+function yearTicks(years, width) {
   var first = years[0], last = years[years.length - 1];
+  // a 375px chart cannot carry a label every three years without them colliding
+  var step = (width && width < 480) ? 6 : (width && width < 760 ? 4 : 3);
   return years.filter(function (y) {
     if (y === first || y === last) return true;
-    if (y % 3 !== 0) return false;
+    if (y % step !== 0) return false;
     return Math.abs(y - first) > 1 && Math.abs(y - last) > 1;
   });
 }
@@ -191,6 +204,142 @@ function inkOn(hex) {
   var lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   return lum > 0.55 ? '#14171c' : '#f4f2ee';
 }
+
+// ==========================================================================
+// REPEAT-SALES PRICE INDEX
+//
+// The observed median by year is flat across sixteen years — £655k in 2010,
+// £670k in 2025 — and that is an artefact, not the market. The extract has a
+// fixed £550,000 floor, so as prices rise progressively more modest houses
+// cross it and drag the observed median back down, very nearly cancelling real
+// growth. (The share of semis and terraces in the sample climbs from 8.4% to
+// 12.2% over the period, which is that effect made visible.)
+//
+// The honest measure is the same house sold twice: size, plot, aspect and
+// street held constant, so the change in price is the change in price. 832
+// addresses here sold more than once. This is the standard repeat-sales
+// regression (the method behind Case-Shiller), solved by ordinary least
+// squares on log price relatives.
+//
+// It is computed ONCE over the whole region and deliberately does not follow
+// the area filter: below district level the pair counts collapse — the median
+// village has two — and a per-village index would be pure noise wearing the
+// authority of a line chart.
+// ==========================================================================
+
+var RSI = (function () {
+  var MIN_GAP_MONTHS = 6;      // ignore near-instant resales; often the same deal
+  var MAX_RATIO = 2.0;         // a doubling is an extension or a rebuild, not the market
+  var MIN_RATIO = 0.5;
+  var BASE = 2013;             // 2010–12 rests on ~20 pairs; too thin to anchor on
+  var BOOTSTRAPS = 160;
+
+  // group by address; the address strings are title-cased consistently by
+  // build_data.py so they match exactly
+  var byAddr = {};
+  for (var i = 0; i < N; i++) {
+    var a = C.address[i];
+    (byAddr[a] || (byAddr[a] = [])).push(i);
+  }
+
+  var pairs = [], repeatsOf = {}, addrCount = 0;
+  Object.keys(byAddr).forEach(function (a) {
+    var list = byAddr[a];
+    if (list.length < 2) return;
+    addrCount++;
+    list.sort(function (p, q) { return C.date[p] - C.date[q]; });
+    repeatsOf[a] = list;
+    for (var k = 1; k < list.length; k++) {
+      var p0 = list[k - 1], p1 = list[k];
+      var gap = C.date[p1] - C.date[p0];
+      if (gap < MIN_GAP_MONTHS) continue;
+      var ratio = C.price[p1] / C.price[p0];
+      if (ratio > MAX_RATIO || ratio < MIN_RATIO) continue;
+      pairs.push({ y0: yearOf(C.date[p0]), y1: yearOf(C.date[p1]), lr: Math.log(ratio) });
+    }
+  });
+
+  var YEARS = [];
+  for (var y = BASE_YEAR; y <= LAST_YEAR; y++) YEARS.push(y);
+  var pos = {};
+  YEARS.forEach(function (yr, k) { pos[yr] = k; });
+
+  // Solve for annual log-levels: for each pair, level(y1) - level(y0) = log ratio.
+  // Normal equations give a symmetric system; one year is pinned to break the
+  // translation degeneracy.
+  function solve(ps) {
+    var n = YEARS.length, A = [], b = [], r, c;
+    for (r = 0; r < n; r++) { A.push(new Array(n)); for (c = 0; c < n; c++) A[r][c] = 0; b.push(0); }
+    for (var k = 0; k < ps.length; k++) {
+      var i = pos[ps[k].y0], j = pos[ps[k].y1], lr = ps[k].lr;
+      A[i][i] += 1; A[j][j] += 1; A[i][j] -= 1; A[j][i] -= 1;
+      b[i] -= lr; b[j] += lr;
+    }
+    A[pos[BASE]][pos[BASE]] += 1e6;                    // pin the base year at 0
+    for (var p = 0; p < n; p++) {                      // gaussian elimination, partial pivot
+      var best = p;
+      for (r = p + 1; r < n; r++) if (Math.abs(A[r][p]) > Math.abs(A[best][p])) best = r;
+      var t = A[p]; A[p] = A[best]; A[best] = t;
+      var tb = b[p]; b[p] = b[best]; b[best] = tb;
+      if (Math.abs(A[p][p]) < 1e-12) A[p][p] = 1e-9;
+      for (r = p + 1; r < n; r++) {
+        var f = A[r][p] / A[p][p];
+        if (!f) continue;
+        for (c = p; c < n; c++) A[r][c] -= f * A[p][c];
+        b[r] -= f * b[p];
+      }
+    }
+    var x = new Array(n);
+    for (r = n - 1; r >= 0; r--) {
+      var s = 0;
+      for (c = r + 1; c < n; c++) s += A[r][c] * x[c];
+      x[r] = (b[r] - s) / A[r][r];
+    }
+    return x;
+  }
+
+  var level = {}, band = {};
+  if (pairs.length >= 60) {
+    var fit = solve(pairs);
+    YEARS.forEach(function (yr) { level[yr] = Math.exp(fit[pos[yr]]) * 100; });
+
+    // bootstrap the pair sample for an honest uncertainty band
+    var draws = {};
+    YEARS.forEach(function (yr) { draws[yr] = []; });
+    var seed = 20260801;
+    var rnd = function () { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+    for (var bIdx = 0; bIdx < BOOTSTRAPS; bIdx++) {
+      var samp = new Array(pairs.length);
+      for (var s2 = 0; s2 < pairs.length; s2++) samp[s2] = pairs[(rnd() * pairs.length) | 0];
+      try {
+        var f2 = solve(samp);
+        YEARS.forEach(function (yr) { draws[yr].push(Math.exp(f2[pos[yr]]) * 100); });
+      } catch (e) { /* a degenerate resample just contributes nothing */ }
+    }
+    YEARS.forEach(function (yr) {
+      var d = draws[yr].sort(function (p, q) { return p - q; });
+      band[yr] = d.length ? { lo: quantile(d, 0.05), hi: quantile(d, 0.95) } : null;
+    });
+  }
+
+  // how many pairs inform each year, so the chart can fade a thin tail
+  var perYear = {};
+  YEARS.forEach(function (yr) { perYear[yr] = 0; });
+  pairs.forEach(function (p) { perYear[p.y0]++; perYear[p.y1]++; });
+
+  // the factor to restate a price from one year in another year's money
+  function factor(fromYear, toYear) {
+    if (!level[fromYear] || !level[toYear]) return null;
+    return level[toYear] / level[fromYear];
+  }
+
+  return {
+    base: BASE, years: YEARS, level: level, band: band, perYear: perYear,
+    pairs: pairs.length, addresses: addrCount, repeatsOf: repeatsOf,
+    factor: factor,
+    ok: pairs.length >= 60
+  };
+})();
 
 // ---------------------------------------------------------------- tooltip
 
@@ -261,15 +410,20 @@ var state = {
   county: '',
   district: '',
   village: '',
+  area: null,          // {kind, name} — an exact scope, beats the loose text match
   ptype: '',
   bands: {},          // key -> true
   search: false,
-  newBuild: false,
+  newBuild: 0,        // 0 = all, 1 = new build only, -1 = exclude new build
   view: 'pulse',
   mapMetric: 'volume',
   mapSel: null,
   grain: 'zone',      // zone | district for momentum + value
   salesSort: { col: 'date', dir: -1 },
+  salesLimit: 400,
+  todayMoney: false,   // restate past prices in today's money — off by default
+  repeatOnly: false,
+  openHistory: null,
   salesQuery: ''
 };
 
@@ -284,12 +438,19 @@ function passes(i, skipVillage) {
   var y = yearOf(C.date[i]);
   if (y < state.y0 || y > state.y1) return false;
   if (state.search && !(C.flags[i] & F_SEARCH)) return false;
-  if (state.newBuild && !(C.flags[i] & F_NEW)) return false;
+  if (state.newBuild === 1 && !(C.flags[i] & F_NEW)) return false;
+  if (state.newBuild === -1 && (C.flags[i] & F_NEW)) return false;
   if (state.county && COUNTY_OF[DICT.district[C.district[i]]] !== state.county) return false;
   if (state.district && DICT.district[C.district[i]] !== state.district) return false;
   if (state.ptype && DICT.ptype[C.ptype[i]] !== state.ptype) return false;
-  if (state.village && !skipVillage &&
-      DICT.settlement[C.settlement[i]].toLowerCase().indexOf(state.village) < 0) return false;
+  if (!skipVillage) {
+    // an exact area pick (village, zone, postcode district or sector) beats the
+    // loose text match, which pools every settlement whose name contains the text
+    if (state.area) {
+      if (areaValue(state.area.kind, i) !== state.area.name) return false;
+    } else if (state.village &&
+               DICT.settlement[C.settlement[i]].toLowerCase().indexOf(state.village) < 0) return false;
+  }
   var bk = Object.keys(state.bands);
   if (bk.length) {
     var p = C.price[i], ok = false;
@@ -331,14 +492,56 @@ function priceStats(idx) {
   };
 }
 
+// The four things you can scope to, in the order the type-ahead offers them.
+// "village" is the unit you shop in; the other three are the units the charts
+// aggregate by, and until now you could rank them but never scope to one.
+var AREA_KINDS = [
+  { kind: 'settlement', label: 'village' },
+  { kind: 'zone',       label: 'settlement zone' },
+  { kind: 'pcd',        label: 'postcode district' },
+  { kind: 'sector',     label: 'postcode sector' }
+];
+function areaValue(kind, i) {
+  if (kind === 'settlement') return DICT.settlement[C.settlement[i]];
+  if (kind === 'zone') return DICT.zone[C.zone[i]];
+  if (kind === 'pcd') return DICT.pcd[C.pcd[i]];
+  if (kind === 'sector') return DICT.sector[C.sector[i]];
+  return null;
+}
+function areaKindLabel(kind) {
+  for (var i = 0; i < AREA_KINDS.length; i++) if (AREA_KINDS[i].kind === kind) return AREA_KINDS[i].label;
+  return kind;
+}
+
+// Set the scope from a click on the map, a treemap cell or a table row.
+function scopeTo(kind, name) {
+  if (state.area && state.area.kind === kind && state.area.name === name) state.area = null;
+  else state.area = { kind: kind, name: name };
+  state.village = '';
+  var box = $('fVillage');
+  if (box) box.value = state.area ? state.area.name : '';
+  // scoping to the unit the chart already groups by would draw a single bar,
+  // so step one level finer
+  if (state.area) {
+    if (state.grain === kind) {
+      state.grain = (kind === 'zone' || kind === 'pcd') ? 'settlement'
+                  : (kind === 'sector' ? 'settlement' : 'settlement');
+    }
+    if (kind === 'settlement') state.grain = 'settlement';
+  }
+  refresh();
+}
+
 function keyFor(grain) {
   if (grain === 'district') return function (i) { return DICT.district[C.district[i]]; };
   if (grain === 'pcd') return function (i) { var v = DICT.pcd[C.pcd[i]]; return v === '—' ? null : v; };
   if (grain === 'settlement') return function (i) { return DICT.settlement[C.settlement[i]]; };
+  if (grain === 'sector') return function (i) { var v = DICT.sector[C.sector[i]]; return v === '—' ? null : v; };
   return function (i) { return DICT.zone[C.zone[i]]; };
 }
 function grainNoun(grain, plural) {
-  var m = { district: 'district', zone: 'settlement zone', pcd: 'postcode district', settlement: 'village' };
+  var m = { district: 'district', zone: 'settlement zone', pcd: 'postcode district',
+            settlement: 'village', sector: 'postcode sector' };
   return m[grain] + (plural ? 's' : '');
 }
 
@@ -360,12 +563,13 @@ function windows() {
 // per-area momentum, at the given grain
 function momentum(grain) {
   var win = windows();
-  if (!win) return { win: null, rows: [] };
+  if (!win) return { win: null, rows: [], considered: 0 };
   var kf = keyFor(grain);
   var g = groupBy(slice, kf);
-  var rows = [];
+  var rows = [], considered = 0;
   Object.keys(g).forEach(function (name) {
     var idx = g[name];
+    considered++;
     if (idx.length < minSalesFor(grain)) return;
     var rec = [], pri = [];
     for (var i = 0; i < idx.length; i++) {
@@ -386,8 +590,31 @@ function momentum(grain) {
       med: priceStats(idx).med
     });
   });
-  return { win: win, rows: rows };
+  return { win: win, rows: rows, considered: considered };
 }
+
+// Describe the baseline honestly. It is the median of whatever is in view, so
+// calling it "the regional median" is false the moment anything is filtered —
+// scope to one village and the premium bar reads 0.0% under a caption claiming
+// a regional comparison.
+function baselineLabel(shortForm) {
+  var bits = [];
+  if (state.county) bits.push(state.county);
+  if (state.district) bits.push(state.district);
+  if (state.area) bits.push(state.area.name);
+  if (state.village) bits.push('“' + state.village + '”');
+  if (state.ptype) bits.push(state.ptype);
+  if (state.newBuild === 1) bits.push('new build');
+  else if (state.newBuild === -1) bits.push('resale only');
+  if (state.search) bits.push('search area');
+  if (Object.keys(state.bands).length) bits.push('selected bands');
+  if (state.y0 !== BASE_YEAR || state.y1 !== LAST_YEAR) bits.push(state.y0 + '–' + state.y1);
+
+  if (!bits.length) return shortForm ? 'region' : 'the whole region';
+  if (shortForm) return 'sales in view';
+  return 'the ' + fmtInt(slice.length) + ' sales in view — ' + bits.join(', ');
+}
+function isUnfiltered() { return baselineLabel(true) === 'region'; }
 
 function dominantDistrict(idx) {
   var c = {}, best = null, bn = 0;
@@ -612,6 +839,12 @@ function renderPulse() {
   var years = [];
   for (var y = state.y0; y <= state.y1; y++) years.push(y);
   var yearCounts = years.map(function (y) { return (byYear[y] || []).length; });
+  // the median tile used to draw this same volume series under a price figure —
+  // the two correlate at about -0.02, so it implied a trend that did not exist
+  var yearMedians = years.map(function (y) {
+    var p = (byYear[y] || []).map(function (i) { return C.price[i]; }).sort(function (a, b) { return a - b; });
+    return p.length >= 3 ? quantile(p, 0.5) : null;
+  });
 
   var mom = momentum('district');
   var win = mom.win;
@@ -635,7 +868,7 @@ function renderPulse() {
 
   var winLabel = win ? (win.w + '-month' ) : '';
   addTile(tiles, 'Median sale', fmtCompact(st.med),
-    win && priorP.length ? deltaText(median(recentP), median(priorP), true, winLabel) : null, yearCounts, years, 'median');
+    win && priorP.length ? deltaText(median(recentP), median(priorP), true, winLabel) : null, yearMedians, years, 'median');
   addTile(tiles, 'Middle half', st.n ? fmtCompact(st.p25) + ' – ' + fmtCompact(st.p75) : '—',
     { txt: '25th to 75th percentile', dir: 0 }, null, null);
   addTile(tiles, 'Sales per year', st.n ? fmtInt(st.n / Math.max(1, yrs - (state.y1 === PARTIAL_YEAR ? 0.5 : 0))) : '—',
@@ -647,7 +880,19 @@ function renderPulse() {
   addTile(tiles, 'New build', st.n ? (newb / st.n * 100).toFixed(1) + '%' : '—',
     { txt: fmtInt(newb) + ' sales', dir: 0 }, null, null);
 
+  // the standfirst carries the live headline so the page never asserts a number
+  // that the data no longer supports
+  var sf = $('standfirstRsi');
+  if (sf && RSI.ok) {
+    var lastY = RSI.years[RSI.years.length - 1];
+    var f13 = RSI.factor(RSI.base, lastY), f23 = RSI.factor(2023, lastY);
+    sf.textContent = fmtPct((f13 - 1) * 100, 0) + ' since ' + RSI.base +
+      (f23 !== null ? ', and ' + (Math.abs(f23 - 1) < 0.03 ? 'flat since 2023' :
+        fmtPct((f23 - 1) * 100, 0) + ' since 2023') : '');
+  }
+
   drawWave();
+  drawIndexChart();
   drawPriceChart();
   drawMovers();
   drawSmallMultiples();
@@ -664,8 +909,10 @@ function addTile(host, label, value, delta, sparkVals, sparkYears, sparkKind) {
   t.appendChild(el('div', 'value', value));
   if (delta) {
     var d = el('div', 'delta');
-    if (delta.dir === 1) d.className = 'delta delta-up';
-    if (delta.dir === -1) d.className = 'delta delta-down';
+    // warm/cool, matching every chart on the page, rather than the app's only
+    // green/red pair pointing the opposite way to the bars beneath it
+    if (delta.dir === 1) d.style.color = DIV[5];
+    if (delta.dir === -1) d.style.color = DIV[1];
     d.textContent = (delta.dir === 1 ? '▲ ' : delta.dir === -1 ? '▼ ' : '') + delta.txt;
     t.appendChild(d);
   }
@@ -674,6 +921,8 @@ function addTile(host, label, value, delta, sparkVals, sparkYears, sparkKind) {
 }
 
 function sparkline(vals, w, h, color) {
+  vals = vals.filter(function (v) { return v !== null && v !== undefined && isFinite(v); });
+  if (vals.length < 2) return s('svg', { class: 'spark', width: w, height: h });
   var max = Math.max.apply(null, vals), min = Math.min.apply(null, vals);
   var x = linear(0, vals.length - 1, 1, w - 1), y = linear(min, max === min ? min + 1 : max, h - 2, 2);
   var d = vals.map(function (v, i) { return (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(v).toFixed(1); }).join('');
@@ -766,12 +1015,164 @@ function drawWave() {
     }).reverse());
 }
 
-function emptyChart(m) {
-  var t = el('div', 'empty', 'No sales match the current filters.');
+function emptyChart(m, why) {
+  var t = el('div', 'empty', why || (slice.length
+    ? fmtInt(slice.length) + ' sales are in view, but too few areas clear this chart\u2019s sample threshold.'
+    : 'No sales match the current filters.'));
   clear(m.host);
   m.host.appendChild(t);
   // drop the table twin too — it must never outlive the chart it mirrors
   delete TABLES[m.host.id];
+}
+
+// --------------------------------------------- repeat-sales index vs median
+
+function drawIndexChart() {
+  var host = $('indexChart');
+  if (!host) return;
+  if (!RSI.ok) {
+    clear(host);
+    host.appendChild(el('div', 'empty', 'Not enough repeat sales to build an index.'));
+    return;
+  }
+  var years = RSI.years.filter(function (y) { return y >= RSI.base; });
+
+  // Both series are region-wide and unfiltered. Mixing a filtered median with an
+  // unfiltered index on one axis would compare two different populations.
+  var byYear = {};
+  for (var i = 0; i < N; i++) {
+    var y = yearOf(C.date[i]);
+    (byYear[y] || (byYear[y] = [])).push(C.price[i]);
+  }
+  var obs = {};
+  years.forEach(function (y) {
+    var p = (byYear[y] || []).slice().sort(function (a, b) { return a - b; });
+    obs[y] = p.length ? quantile(p, 0.5) : null;
+  });
+  var obsBase = obs[RSI.base];
+  var obsIdx = {};
+  years.forEach(function (y) { obsIdx[y] = obs[y] ? obs[y] / obsBase * 100 : null; });
+
+  var m = mount('indexChart', 340);
+  var pad = { t: 18, r: 118, b: 34, l: 50 };
+
+  var lo = 90, hi = 110;
+  years.forEach(function (y) {
+    var b = RSI.band[y];
+    if (b) { lo = Math.min(lo, b.lo); hi = Math.max(hi, b.hi); }
+    lo = Math.min(lo, RSI.level[y], obsIdx[y] || 100);
+    hi = Math.max(hi, RSI.level[y], obsIdx[y] || 100);
+  });
+  lo = Math.floor(lo / 10) * 10 - 2;
+  hi = Math.ceil(hi / 10) * 10 + 2;
+
+  var x = linear(years[0], years[years.length - 1], pad.l, m.w - pad.r);
+  var yy = linear(lo, hi, m.h - pad.b, pad.t);
+  var g = s('g');
+
+  yAxis(g, yy, niceTicks(lo, hi, 5), pad.l, m.w - pad.r, function (v) { return String(Math.round(v)); });
+
+  // 100 line = the base year
+  var y100 = Math.round(yy(100)) + 0.5;
+  g.appendChild(s('line', { x1: pad.l, x2: m.w - pad.r, y1: y100, y2: y100, stroke: '#3a4048', 'stroke-width': 1 }));
+
+  // bootstrap band
+  var up = [], dn = [];
+  years.forEach(function (y) {
+    var b = RSI.band[y];
+    if (!b) return;
+    up.push(x(y).toFixed(1) + ',' + yy(b.hi).toFixed(1));
+    dn.unshift(x(y).toFixed(1) + ',' + yy(b.lo).toFixed(1));
+  });
+  if (up.length) g.appendChild(s('polygon', { points: up.concat(dn).join(' '), fill: ACCENT, opacity: 0.14 }));
+
+  function line(vals, colour, width, dash) {
+    var d = '', started = false;
+    years.forEach(function (y) {
+      if (vals[y] === null || vals[y] === undefined) return;
+      d += (started ? 'L' : 'M') + x(y).toFixed(1) + ',' + yy(vals[y]).toFixed(1);
+      started = true;
+    });
+    return s('path', { d: d, fill: 'none', stroke: colour, 'stroke-width': width,
+                       'stroke-linejoin': 'round', 'stroke-dasharray': dash || null });
+  }
+  g.appendChild(line(obsIdx, MUTED, 2));
+  g.appendChild(line(RSI.level, ACCENT, 2.5));
+
+  var last = years[years.length - 1];
+  [[RSI.level[last], ACCENT, 'Same houses', 650],
+   [obsIdx[last], MUTED, 'Observed median', 500]].forEach(function (spec) {
+    if (spec[0] === null || spec[0] === undefined) return;
+    g.appendChild(s('circle', { cx: x(last), cy: yy(spec[0]), r: 4.5, fill: spec[1], stroke: SURFACE, 'stroke-width': 2 }));
+    g.appendChild(s('text', { class: 'val', x: x(last) + 10, y: yy(spec[0]) - 3, fill: '#f4f2ee' },
+      Math.round(spec[0]) ));
+    g.appendChild(s('text', { class: 'lbl', x: x(last) + 10, y: yy(spec[0]) + 11, 'font-size': 10.5,
+      fill: INK3 }, spec[2]));
+  });
+
+  // hover: what a comparable from this year is worth now
+  years.forEach(function (y) {
+    var hw = (m.w - pad.l - pad.r) / years.length;
+    var hit = s('rect', { class: 'hit', x: x(y) - hw / 2, y: pad.t, width: hw, height: m.h - pad.b - pad.t, tabindex: 0 });
+    bindTip(hit, function () {
+      var f = RSI.factor(y, last);
+      var rows = [
+        { k: 'Same houses', v: Math.round(RSI.level[y]), color: ACCENT },
+        { k: 'Observed median', v: obsIdx[y] ? Math.round(obsIdx[y]) : '—', color: MUTED }
+      ];
+      if (f !== null && y !== last) {
+        rows.push({ k: 'A ' + y + ' sale, in today’s terms', v: fmtPct((f - 1) * 100, 1) });
+      }
+      rows.push({ k: 'Repeat sales informing ' + y, v: fmtInt(RSI.perYear[y]) });
+      return {
+        title: String(y) + (y === PARTIAL_YEAR ? ' (to June)' : ''),
+        rows: rows,
+        foot: 'Index set to 100 in ' + RSI.base
+      };
+    });
+    g.appendChild(hit);
+  });
+
+  var ticks = yearTicks(years, m.w).map(function (yr) { return { x: x(yr), label: String(yr) }; });
+  xLabels(g, ticks, m.h - 12);
+  m.svg.appendChild(g);
+
+  var lg = legend(m.host, [
+    { color: ACCENT, label: 'The same houses, sold twice (' + fmtInt(RSI.pairs) + ' pairs)', line: true },
+    { color: MUTED, label: 'Observed median of whatever sold that year', line: true },
+    { color: '#4a3f2a', label: '90% confidence band' }
+  ]);
+  lg.style.marginTop = '10px';
+
+  // the three readouts that actually matter when pricing a comparable
+  var readout = $('rsiReadout');
+  if (readout) {
+    clear(readout);
+    [[2019, 'A 2019 comparable'], [2023, 'A 2023 comparable'], [RSI.base, 'Since ' + RSI.base]].forEach(function (spec) {
+      var f = RSI.factor(spec[0], last);
+      if (f === null) return;
+      var cell = el('div', 'rsi-cell');
+      cell.appendChild(el('div', 'k', spec[1]));
+      var v = el('div', 'v', fmtPct((f - 1) * 100, 1));
+      v.style.color = Math.abs(f - 1) < 0.02 ? 'var(--ink)' : divergingColor((f - 1) * 100, 40);
+      cell.appendChild(v);
+      var obsF = (obsIdx[spec[0]] && obsIdx[last]) ? obsIdx[last] / obsIdx[spec[0]] : null;
+      cell.appendChild(el('div', 'n', obsF ? 'median says ' + fmtPct((obsF - 1) * 100, 1) : ''));
+      readout.appendChild(cell);
+    });
+  }
+
+  registerTable('indexChart',
+    ['Year', 'Same houses (index)', '90% band', 'Observed median (index)', 'Observed median', 'Repeat sales'],
+    years.map(function (y) {
+      var b = RSI.band[y];
+      return [String(y) + (y === PARTIAL_YEAR ? ' (part)' : ''),
+              RSI.level[y].toFixed(1),
+              b ? b.lo.toFixed(1) + '–' + b.hi.toFixed(1) : '—',
+              obsIdx[y] ? obsIdx[y].toFixed(1) : '—',
+              obs[y] ? fmtMoney(obs[y]) : '—',
+              fmtInt(RSI.perYear[y])];
+    }));
 }
 
 // ------------------------------------------------------------ price by year
@@ -828,7 +1229,7 @@ function drawPriceChart() {
     g.appendChild(hit);
   });
 
-  var ticks = yearTicks(rows.map(function (r) { return r.year; }))
+  var ticks = yearTicks(rows.map(function (r) { return r.year; }), m.w)
     .map(function (yr) { return { x: x(yr), label: String(yr) }; });
   xLabels(g, ticks, m.h - 12);
   m.svg.appendChild(g);
@@ -856,12 +1257,30 @@ function drawMovers() {
     return;
   }
   var w = mo.win;
+  // the region-wide baseline, so a single zone's number is interpretable
+  var regRec = 0, regPri = 0;
+  for (var ri = 0; ri < slice.length; ri++) {
+    var rm = C.date[slice[ri]];
+    if (rm >= w.recent0 && rm <= w.recent1) regRec++;
+    else if (rm >= w.prior0 && rm <= w.prior1) regPri++;
+  }
+  var regChange = regPri ? (regRec - regPri) / regPri * 100 : null;
   $('moversSub').textContent =
     'Change in the number of £550k+ sales, ' + monthLabel(w.recent0) + '–' + monthLabel(w.recent1) +
-    ' against the ' + w.w + ' months before it. Settlement zones with at least ' + MIN_AREA_SALES +
-    ' sales in the slice.';
+    ' against the ' + w.w + ' months before it, with the counts in brackets. ' +
+    (regChange !== null
+      ? 'The whole slice went ' + fmtInt(regPri) + ' → ' + fmtInt(regRec) + ' (' + fmtPct(regChange, 0) +
+        '), so read every zone against that. '
+      : '') +
+    'Zones need ' + MOVER_FLOOR_LABEL + ' sales in each window to rank.';
 
-  var sorted = mo.rows.slice().sort(function (a, b) { return b.volChange - a.volChange; });
+  // A 9 -> 19 zone used to outrank the largest real movement in the region.
+  // Require a floor in BOTH windows so the ranking reflects size, not noise.
+  var MOVER_FLOOR = MOVER_FLOOR_LABEL;
+  var sorted = mo.rows.slice()
+    .filter(function (r) { return Math.min(r.nRecent, r.nPrior) >= MOVER_FLOOR; })
+    .sort(function (a, b) { return b.volChange - a.volChange; });
+  if (sorted.length < 6) sorted = mo.rows.slice().sort(function (a, b) { return b.volChange - a.volChange; });
   var top = sorted.slice(0, 6);
   var bot = sorted.slice(-6).reverse();
   var rows = top.concat(bot).filter(function (r, i, arr) {
@@ -887,7 +1306,7 @@ function drawMovers() {
     g.appendChild(s('text', {
       class: 'val', x: x(r.volChange) + (xw >= 0 ? 7 : -7), y: yy + bh - 3,
       'text-anchor': xw >= 0 ? 'start' : 'end'
-    }, fmtPct(r.volChange, 0)));
+    }, fmtPct(r.volChange, 0) + '  (' + r.nPrior + '→' + r.nRecent + ')'));
 
     var hit = s('rect', { class: 'hit', x: pad.l - 145, y: pad.t + i * rowH, width: m.w - pad.l + 140, height: rowH, tabindex: 0 });
     bindTip(hit, function () {
@@ -969,6 +1388,13 @@ function drawSmallMultiples() {
       s('line', { x1: 0, x2: W, y1: H - pb + 0.5, y2: H - pb + 0.5, stroke: '#2c313a', 'stroke-width': 1 }),
       s('path', { d: area, fill: ACCENT, opacity: 0.12 }),
       s('path', { d: line, fill: 'none', stroke: ACCENT, 'stroke-width': 2, 'stroke-linejoin': 'round', vectorEffect: 'non-scaling-stroke' }),
+      // the final year is part-year; drawing it as a real slope reads as a crash
+      (years[years.length - 1] === PARTIAL_YEAR && vals.length > 1
+        ? s('line', { x1: x(vals.length - 2), y1: yy(vals[vals.length - 2]),
+                      x2: x(vals.length - 1), y2: yy(vals[vals.length - 1]),
+                      stroke: SURFACE, 'stroke-width': 3, opacity: 0.55,
+                      vectorEffect: 'non-scaling-stroke' })
+        : null),
       s('circle', { cx: x(vals.indexOf(max)), cy: yy(max), r: 3.5, fill: ACCENT_UI, stroke: SURFACE, 'stroke-width': 2 })
     ]);
     cell.appendChild(svg);
@@ -1079,13 +1505,15 @@ function renderMap() {
   MAP_METRICS.forEach(function (mm) {
     var b = el('button', 'chip', mm.label);
     b.setAttribute('aria-pressed', state.mapMetric === mm.key ? 'true' : 'false');
-    b.addEventListener('click', function () { state.mapMetric = mm.key; renderMap(); });
+    b.addEventListener('click', function () { state.mapMetric = mm.key; writeUrlState(); renderMap(); });
     chipHost.appendChild(b);
   });
 
   var mv = mapValues();
   var codes = Object.keys(mv.areas);
   var metric = state.mapMetric;
+  // the map highlights whatever postcode district the app is scoped to
+  var mapScoped = (state.area && state.area.kind === 'pcd') ? state.area.name : null;
 
   var subs = {
     volume: 'Number of £550k+ sales recorded in each postcode district. Size of market, not price.',
@@ -1094,10 +1522,10 @@ function renderMap() {
       ? 'Change in sales count, ' + monthLabel(mv.win.recent0) + '–' + monthLabel(mv.win.recent1) +
         ' against the ' + mv.win.w + ' months before. Grey areas have too few sales to judge.'
       : 'Not enough history in this slice to measure momentum.',
-    premium: 'Each area\'s median against the regional median of ' + fmtCompact(mv.regionMed) +
-             '. Warm is dearer than the region, cool is cheaper.'
+    premium: 'Each area\'s median against the ' + (isUnfiltered() ? 'regional median' : 'median of ' + baselineLabel(false)) +
+             ' (' + fmtCompact(mv.regionMed) + '). Warm is dearer than that baseline, cool is cheaper.'
   };
-  $('mapSub').textContent = subs[metric];
+  // caption is written after the scale block below, once `thin` is known
 
   // size the canvas to the region's own aspect so the map fills its column
   var availW = $('mapChart').clientWidth || 800;
@@ -1107,10 +1535,17 @@ function renderMap() {
   proj = buildProjection(m.w, mapH);
 
   // --- scale
+  // A single sale used to set the whole scale: PE11 (n=1, £1,050,000) was rank
+  // one by median, and its 59% premium made four of seven diverging steps
+  // unreachable when the real spread among solid areas is about ±11%.
+  var MAP_MIN = MIN_AREA_SALES;
+  var solid = codes.filter(function (c) { return mv.areas[c].n >= MAP_MIN; });
+  var thin = codes.length - solid.length;
+
   var valOf, colorOf, fmtV, stops;
   if (metric === 'volume' || metric === 'median') {
     valOf = function (a) { return metric === 'volume' ? a.n : a.med; };
-    var vals = codes.map(function (c) { return valOf(mv.areas[c]); });
+    var vals = (metric === 'volume' ? codes : solid).map(function (c) { return valOf(mv.areas[c]); });
     var qb = quantileBins(vals, SEQ.slice(1), 6);
     colorOf = qb.colorOf;
     stops = qb.bins;
@@ -1118,7 +1553,7 @@ function renderMap() {
     scaleLegend('mapScale', stops, function (v) { return fmtV(v); }, 'six equal-sized groups of areas');
   } else {
     valOf = function (a) { return a[metric]; };
-    var dv = codes.map(function (c) { return valOf(mv.areas[c]); }).filter(function (v) { return v !== null && isFinite(v); });
+    var dv = solid.map(function (c) { return valOf(mv.areas[c]); }).filter(function (v) { return v !== null && isFinite(v); });
     var maxAbs = dv.length ? Math.max.apply(null, dv.map(Math.abs)) : 1;
     maxAbs = Math.max(maxAbs, 5);
     colorOf = function (v) { return v === null ? '#22262d' : divergingColor(v, maxAbs); };
@@ -1138,6 +1573,12 @@ function renderMap() {
     sl.appendChild(box);
   }
 
+  $('mapSub').textContent = subs[metric] +
+    (metric !== 'volume' && thin
+      ? ' ' + thin + ' area' + (thin === 1 ? '' : 's') + ' with fewer than ' + MAP_MIN +
+        ' sales are left grey — one sale cannot set a median.'
+      : '');
+
   // --- shapes
   var g = s('g');
   var byArea = {};
@@ -1151,7 +1592,8 @@ function renderMap() {
       }).join('') + 'Z';
     }).join('');
 
-    var fill = a ? colorOf(valOf(a)) : '#191d23';
+    var tooThin = a && metric !== 'volume' && a.n < MAP_MIN;
+    var fill = !a ? '#191d23' : (tooThin ? '#22262d' : colorOf(valOf(a)));
     var path = s('path', { class: 'map-shape', d: d, fill: fill, tabindex: a ? 0 : null });
     if (a) {
       byArea[code] = path;
@@ -1162,17 +1604,16 @@ function renderMap() {
           { k: 'Middle half', v: fmtCompact(a.p25) + '–' + fmtCompact(a.p75) }
         ];
         if (a.momentum !== null) rows.push({ k: 'Momentum', v: fmtPct(a.momentum, 0) });
-        if (a.premium !== null) rows.push({ k: 'vs region', v: fmtPct(a.premium, 0) });
-        return { title: code + ' · ' + a.district, rows: rows, foot: 'Click to pin this area' };
+        if (a.premium !== null) rows.push({ k: 'vs ' + baselineLabel(true), v: fmtPct(a.premium, 0) });
+        return { title: code + ' · ' + a.district, rows: rows,
+                 foot: (state.area && state.area.name === code) ? 'Click to clear this scope'
+                                                                  : 'Click to scope everything to ' + code };
       });
       path.addEventListener('pointerenter', function () { highlightArea(code, true); });
       path.addEventListener('pointerleave', function () { highlightArea(null, true); });
-      path.addEventListener('click', function () {
-        state.mapSel = state.mapSel === code ? null : code;
-        renderMap();
-      });
-      if (state.mapSel === code) path.classList.add('sel');
-      else if (state.mapSel) path.classList.add('dim');
+      path.addEventListener('click', function () { scopeTo('pcd', code); });
+      if (mapScoped === code) path.classList.add('sel');
+      else if (mapScoped) path.classList.add('dim');
     } else {
       path.style.cursor = 'default';
     }
@@ -1216,7 +1657,7 @@ function renderMap() {
   var metricLabel = MAP_METRICS.filter(function (x) { return x.key === metric; })[0].label;
   $('rankTitle').textContent = 'Postcode districts by ' + metricLabel.toLowerCase();
 
-  var ranked = codes.filter(function (c) { return valOf(mv.areas[c]) !== null; })
+  var ranked = (metric === 'volume' ? codes : solid).filter(function (c) { return valOf(mv.areas[c]) !== null; })
     .sort(function (a, b) { return valOf(mv.areas[b]) - valOf(mv.areas[a]); })
     .slice(0, 18);
 
@@ -1224,7 +1665,7 @@ function renderMap() {
     var a = mv.areas[code];
     var row = el('div', 'rank-row');
     row.tabIndex = 0;
-    if (state.mapSel === code) row.classList.add('hi');
+    if (mapScoped === code) row.classList.add('hi');
     row.appendChild(el('div', 'n', String(i + 1)));
     var nm = el('div', 'nm', code);
     nm.appendChild(el('small', null, a.district + ' · ' + fmtInt(a.n) + ' sales'));
@@ -1238,12 +1679,12 @@ function renderMap() {
     row.appendChild(vv);
     row.addEventListener('pointerenter', function () { highlightArea(code, false); row.classList.add('hi'); });
     row.addEventListener('pointerleave', function () { highlightArea(null, false); if (state.mapSel !== code) row.classList.remove('hi'); });
-    row.addEventListener('click', function () { state.mapSel = state.mapSel === code ? null : code; renderMap(); });
+    row.addEventListener('click', function () { scopeTo('pcd', code); });
     rankHost.appendChild(row);
   });
 
   registerTable('mapChart',
-    ['Postcode district', 'District', 'Sales', 'Median', 'Middle half', 'Momentum', 'vs region'],
+    ['Postcode district', 'District', 'Sales', 'Median', 'Middle half', 'Momentum', 'vs ' + baselineLabel(true)],
     codes.map(function (c) {
       var a = mv.areas[c];
       return [c, a.district, fmtInt(a.n), fmtMoney(a.med),
@@ -1416,6 +1857,7 @@ function drawTreemap() {
           foot: d.name
         };
       });
+      rect.addEventListener('click', function () { scopeTo('zone', z.item.name); });
       rect.addEventListener('pointerenter', function () { rect.setAttribute('stroke', '#f4f2ee'); rect.setAttribute('stroke-width', 1.5); });
       rect.addEventListener('pointerleave', function () { rect.removeAttribute('stroke'); });
       g.appendChild(rect);
@@ -1444,7 +1886,7 @@ function drawTreemap() {
 // ==========================================================================
 
 var GRAINS = [['zone', 'Settlement zones'], ['district', 'Districts'],
-              ['pcd', 'Postcode districts'], ['settlement', 'Villages']];
+              ['pcd', 'Postcode districts'], ['sector', 'Postcode sectors'], ['settlement', 'Villages']];
 
 // Build the grain control once per card and update it in place on every later
 // render. It lives in the card head, which is NOT cleared between renders, so
@@ -1461,6 +1903,7 @@ function mountGrainControl(head, onChange) {
       b.addEventListener('click', function () {
         if (state.grain === g[0]) return;
         state.grain = g[0];
+        writeUrlState();
         onChange();
       });
       box.appendChild(b);
@@ -1489,10 +1932,12 @@ function renderMomentum() {
   }
   var w = mo.win;
   sub.appendChild(document.createTextNode(
-    'Each bubble is one ' + grainNoun(state.grain) + ', sized by how many £550k+ sales it has seen in the last ' +
-    w.w + ' months (' + monthLabel(w.recent0) + '–' + monthLabel(w.recent1) + '). Right means more sales than the ' +
-    w.w + ' months before; up means a higher median. Areas with fewer than ' + minSalesFor(state.grain) +
-    ' sales in the slice are left out as too thin to read.'));
+    'Each bubble is one ' + grainNoun(state.grain) + ', placed by how busy it has become (across) and ' +
+    'what it costs (up). Bubble size is sales in the last ' + w.w + ' months, ' +
+    monthLabel(w.recent0) + '–' + monthLabel(w.recent1) + '; right of centre means busier than the ' + w.w +
+    ' months before. Click a bubble to scope the whole app to it. An area needs ' + minSalesFor(state.grain) +
+    ' sales in the slice and ' + MIN_WINDOW_SALES + ' in each window to appear — ' +
+    fmtInt(mo.rows.length) + ' of ' + fmtInt(mo.considered) + ' qualify.'));
   mountGrainControl(sub.parentNode, renderMomentum);
 
   drawScatter(mo);
@@ -1503,72 +1948,93 @@ function renderMomentum() {
 function drawScatter(mo) {
   var m = mount('scatter', 480);
   var rows = mo.rows;
-  if (rows.length < 3) return emptyChart(m);
-  var pad = { t: 20, r: 30, b: 46, l: 62 };
+  if (rows.length < 3) return emptyChart(m, fmtInt(slice.length) + ' sales in view. ' +
+    rows.length + ' of ' + mo.considered + ' ' + grainNoun(state.grain, true) +
+    ' clear ' + minSalesFor(state.grain) + ' sales with ' + MIN_WINDOW_SALES +
+    ' in each window; this chart needs 3. Try a coarser detail level.');
+  var pad = { t: 22, r: 30, b: 48, l: 74 };
 
+  // The y-axis used to be change-in-median. A permutation test kills it: shuffle
+  // which sales fall in each window and the spread across zones is essentially
+  // unchanged, so the vertical scatter was noise wearing the authority of a
+  // chart. Median LEVEL is a far more stable estimate than median CHANGE, and
+  // it answers a question you actually have: where is activity growing, and at
+  // what price point. Change-in-median survives only as a table column.
   var xMax = Math.max(20, Math.ceil(Math.max.apply(null, rows.map(function (r) { return Math.abs(r.volChange); })) / 10) * 10);
-  var yMax = Math.max(10, Math.ceil(Math.max.apply(null, rows.map(function (r) { return Math.abs(r.medChange); })) / 5) * 5);
+  var meds = rows.map(function (r) { return r.med; });
+  var yLo = Math.min.apply(null, meds) * 0.94, yHi = Math.max.apply(null, meds) * 1.06;
   var x = linear(-xMax, xMax, pad.l, m.w - pad.r);
-  var y = linear(-yMax, yMax, m.h - pad.b, pad.t);
+  var y = logScale(yLo, yHi, m.h - pad.b, pad.t);
   var maxN = Math.max.apply(null, rows.map(function (r) { return r.nRecent; }));
   var rOf = function (n) { return 5 + 20 * Math.sqrt(n / maxN); };
 
   var g = s('g');
-  // quadrant wash + grid
-  g.appendChild(s('rect', { x: x(0), y: pad.t, width: m.w - pad.r - x(0), height: y(0) - pad.t, fill: '#e66767', opacity: 0.05 }));
-  g.appendChild(s('rect', { x: pad.l, y: y(0), width: x(0) - pad.l, height: m.h - pad.b - y(0), fill: '#3987e5', opacity: 0.05 }));
+  g.appendChild(s('rect', { x: x(0), y: pad.t, width: m.w - pad.r - x(0), height: m.h - pad.b - pad.t,
+                            fill: '#e66767', opacity: 0.04 }));
+  g.appendChild(s('rect', { x: pad.l, y: pad.t, width: x(0) - pad.l, height: m.h - pad.b - pad.t,
+                            fill: '#3987e5', opacity: 0.04 }));
 
-  yAxis(g, y, niceTicks(-yMax, yMax, 5), pad.l, m.w - pad.r, function (v) { return fmtPct(v, 0); });
+  priceTicks(yLo, yHi).forEach(function (t) {
+    var yy = Math.round(y(t)) + 0.5;
+    g.appendChild(s('line', { x1: pad.l, x2: m.w - pad.r, y1: yy, y2: yy, stroke: '#23272e' }));
+    g.appendChild(s('text', { class: 'lbl', x: pad.l - 8, y: yy + 4, 'text-anchor': 'end', 'font-size': 11, fill: INK3 }, fmtCompact(t)));
+  });
   niceTicks(-xMax, xMax, 6).forEach(function (t) {
     var xx = Math.round(x(t)) + 0.5;
     g.appendChild(s('line', { x1: xx, x2: xx, y1: pad.t, y2: m.h - pad.b, stroke: '#23272e' }));
     g.appendChild(s('text', { class: 'lbl', x: xx, y: m.h - pad.b + 16, 'text-anchor': 'middle', 'font-size': 11, fill: INK3 }, fmtPct(t, 0)));
   });
   g.appendChild(s('line', { x1: x(0), x2: x(0), y1: pad.t, y2: m.h - pad.b, stroke: '#2c313a', 'stroke-width': 1 }));
-  g.appendChild(s('line', { x1: pad.l, x2: m.w - pad.r, y1: y(0), y2: y(0), stroke: '#2c313a', 'stroke-width': 1 }));
 
-  g.appendChild(s('text', { class: 'lbl', x: m.w - pad.r, y: pad.t + 4, 'text-anchor': 'end', fill: '#e66767', 'font-weight': 650 }, 'Heating · more sales, higher prices'));
-  g.appendChild(s('text', { class: 'lbl', x: pad.l, y: m.h - pad.b - 6, 'text-anchor': 'start', fill: '#7fb0ee', 'font-weight': 650 }, 'Cooling · fewer sales, softer prices'));
+  var baseMed = priceStats(slice).med;
+  if (baseMed > yLo && baseMed < yHi) {
+    g.appendChild(s('line', { x1: pad.l, x2: m.w - pad.r, y1: y(baseMed), y2: y(baseMed), stroke: ACCENT_UI, opacity: 0.5 }));
+    g.appendChild(s('text', { class: 'lbl', x: m.w - pad.r, y: y(baseMed) - 5, 'text-anchor': 'end',
+                              fill: ACCENT_UI, 'font-size': 10.5 }, 'median of sales in view ' + fmtCompact(baseMed)));
+  }
+
+  g.appendChild(s('text', { class: 'lbl', x: m.w - pad.r, y: m.h - pad.b - 6, 'text-anchor': 'end', fill: '#e66767', 'font-weight': 650 }, 'Busier than before →'));
+  g.appendChild(s('text', { class: 'lbl', x: pad.l, y: m.h - pad.b - 6, 'text-anchor': 'start', fill: '#7fb0ee', 'font-weight': 650 }, '← Quieter than before'));
   g.appendChild(s('text', { class: 'lbl', x: m.w / 2, y: m.h - 10, 'text-anchor': 'middle' }, 'Change in number of sales'));
-  g.appendChild(s('text', { class: 'lbl', x: -(m.h / 2), y: 14, transform: 'rotate(-90)', 'text-anchor': 'middle' }, 'Change in median price'));
+  g.appendChild(s('text', { class: 'lbl', x: -(m.h / 2), y: 14, transform: 'rotate(-90)', 'text-anchor': 'middle' }, 'Median price (log scale)'));
 
-  // draw big bubbles first so small ones stay clickable
   var ordered = rows.slice().sort(function (a, b) { return b.nRecent - a.nRecent; });
   ordered.forEach(function (r) {
     var cx = x(Math.max(-xMax, Math.min(xMax, r.volChange)));
-    var cy = y(Math.max(-yMax, Math.min(yMax, r.medChange)));
-    var sel = (state.district && r.district === state.district) || false;
+    var cy = y(r.med);
+    var sel = (state.area && state.area.name === r.name) ||
+              (state.district && r.district === state.district) || false;
     var col = sel ? ACCENT_UI : ACCENT;
     var c = s('circle', {
       cx: cx, cy: cy, r: rOf(r.nRecent),
-      fill: col, 'fill-opacity': 0.28, stroke: col, 'stroke-width': 1.6, tabindex: 0
+      fill: col, 'fill-opacity': sel ? 0.6 : 0.28, stroke: col, 'stroke-width': 1.6, tabindex: 0,
+      style: 'cursor:pointer'
     });
     bindTip(c, function () {
       return {
         title: r.name,
         rows: [
-          { k: 'Sales, last ' + mo.win.w + ' months', v: fmtInt(r.nRecent), color: col },
+          { k: 'Median price', v: fmtMoney(r.med), color: col },
+          { k: 'Sales, last ' + mo.win.w + ' months', v: fmtInt(r.nRecent) },
           { k: 'Previous ' + mo.win.w + ' months', v: fmtInt(r.nPrior) },
-          { k: 'Volume change', v: fmtPct(r.volChange, 0) },
-          { k: 'Median now', v: fmtMoney(r.medRecent) },
-          { k: 'Median change', v: fmtPct(r.medChange) }
+          { k: 'Change in sales', v: fmtPct(r.volChange, 0) }
         ],
-        foot: state.grain === 'district' ? null : r.district
+        foot: (state.grain === 'district' ? '' : r.district + ' · ') + 'click to scope to this area'
       };
     });
-    c.addEventListener('pointerenter', function () { c.setAttribute('fill-opacity', 0.55); });
-    c.addEventListener('pointerleave', function () { c.setAttribute('fill-opacity', 0.28); });
+    (function (nm) { c.addEventListener('click', function () { scopeTo(state.grain, nm); }); })(r.name);
+    c.addEventListener('pointerenter', function () { c.setAttribute('fill-opacity', 0.6); });
+    c.addEventListener('pointerleave', function () { c.setAttribute('fill-opacity', sel ? 0.6 : 0.28); });
     g.appendChild(c);
   });
 
-  // direct-label the extremes only
   var extremes = rows.slice().sort(function (a, b) {
-    return (Math.abs(b.volChange) + Math.abs(b.medChange) * 2) - (Math.abs(a.volChange) + Math.abs(a.medChange) * 2);
-  }).slice(0, 9);
+    return (Math.abs(b.volChange) * b.nRecent) - (Math.abs(a.volChange) * a.nRecent);
+  }).slice(0, 10);
   var canLabel = labelPlacer(120, 15);
   extremes.forEach(function (r) {
     var cx = x(Math.max(-xMax, Math.min(xMax, r.volChange)));
-    var cy = y(Math.max(-yMax, Math.min(yMax, r.medChange)));
+    var cy = y(r.med);
     if (!canLabel(cx, cy)) return;
     var rr = rOf(r.nRecent);
     var right = cx < m.w / 2;
@@ -1655,6 +2121,9 @@ function drawMoversTable(mo) {
   rows.forEach(function (r) {
     var row = el('tr');
     var tdName = el('td', 'name');
+    tdName.style.cursor = 'pointer';
+    tdName.title = 'Scope everything to ' + r.name;
+    (function (nm) { tdName.addEventListener('click', function () { scopeTo(state.grain, nm); }); })(r.name);
     tdName.appendChild(document.createTextNode(r.name));
     if (state.grain !== 'district') {
       var sm = el('small', null, ' · ' + r.district);
@@ -1686,7 +2155,10 @@ function drawMoversTable(mo) {
 
 function drawBump() {
   var m = mount('bump', 360);
-  var pad = { t: 18, r: 168, b: 30, l: 168 };
+  // fixed 168px gutters on a 293px chart used to invert the scale and draw
+  // time backwards; scale them to the space actually available
+  var gut = Math.max(56, Math.min(168, Math.round(m.w * 0.17)));
+  var pad = { t: 18, r: gut, b: 30, l: gut };
   var years = [];
   for (var y = state.y0; y <= state.y1; y++) years.push(y);
   if (years.length < 2 || !slice.length) return emptyChart(m);
@@ -1711,7 +2183,7 @@ function drawBump() {
   var yy = linear(1, names.length, pad.t, m.h - pad.b);
 
   var g = s('g');
-  yearTicks(years).forEach(function (yr) {
+  yearTicks(years, m.w).forEach(function (yr) {
     g.appendChild(s('text', { class: 'lbl', x: x(yr), y: m.h - 10, 'text-anchor': 'middle', 'font-size': 11 }, String(yr)));
   });
 
@@ -1813,7 +2285,9 @@ function drawDist() {
         ' sales in the slice.';
   }
   var m = mount('distChart', Math.max(220, rows.length * 22 + 56));
-  if (!rows.length) return emptyChart(m);
+  if (!rows.length) return emptyChart(m, fmtInt(slice.length) + ' sales in view, but no ' +
+    grainNoun(state.grain) + ' reaches ' + minSalesFor(state.grain) +
+    ' sales — a quartile box on a handful of sales would mislead. Try a coarser detail level.');
   var pad = { t: 24, r: 84, b: 34, l: 172 };
 
   var lo = Math.min.apply(null, rows.map(function (r) { return r.p10; }));
@@ -1830,7 +2304,7 @@ function drawDist() {
     g.appendChild(s('text', { class: 'lbl', x: xx, y: m.h - pad.b + 16, 'text-anchor': 'middle', 'font-size': 11, fill: INK3 }, fmtCompact(t)));
   });
   g.appendChild(s('line', { x1: x(regionMed), x2: x(regionMed), y1: pad.t - 4, y2: m.h - pad.b, stroke: ACCENT_UI, 'stroke-width': 1, opacity: 0.55 }));
-  g.appendChild(s('text', { class: 'lbl', x: x(regionMed), y: pad.t - 10, 'text-anchor': 'middle', fill: ACCENT_UI, 'font-size': 10.5 }, 'region median ' + fmtCompact(regionMed)));
+  g.appendChild(s('text', { class: 'lbl', x: x(regionMed), y: pad.t - 10, 'text-anchor': 'middle', fill: ACCENT_UI, 'font-size': 10.5 }, (isUnfiltered() ? 'region median ' : 'median of sales in view ') + fmtCompact(regionMed)));
 
   rows.forEach(function (r, i) {
     var cy = pad.t + i * rowH + rowH / 2;
@@ -1849,7 +2323,7 @@ function drawDist() {
           { k: 'Middle half', v: fmtMoney(r.p25) + ' – ' + fmtMoney(r.p75) },
           { k: '10th–90th', v: fmtCompact(r.p10) + ' – ' + fmtCompact(r.p90) },
           { k: 'Sales', v: fmtInt(r.n) },
-          { k: 'vs region', v: fmtPct((r.med - regionMed) / regionMed * 100, 0) }
+          { k: 'vs ' + baselineLabel(true), v: fmtPct((r.med - regionMed) / regionMed * 100, 0) }
         ],
         foot: state.grain === 'district' ? null : r.district
       };
@@ -1878,8 +2352,9 @@ function drawPremium() {
   rows.sort(function (a, b) { return b.prem - a.prem; });
   var show = rows.length > 16 ? rows.slice(0, 8).concat(rows.slice(-8)) : rows;
 
-  $('premSub').textContent = 'Each ' + grainNoun(state.grain) + '\'s median against the regional median of ' +
-    fmtCompact(regionMed) + '.' + (rows.length > 16 ? ' Showing the eight dearest and eight cheapest of ' + rows.length + '.' : '');
+  $('premSub').textContent = 'Each ' + grainNoun(state.grain) + '\'s median against the median of ' +
+    baselineLabel(false) + ' (' + fmtCompact(regionMed) + ').' +
+    (rows.length > 16 ? ' Showing the eight dearest and eight cheapest of ' + rows.length + '.' : '');
 
   var m = mount('premChart', Math.max(200, show.length * 24 + 34));
   if (!show.length) return emptyChart(m);
@@ -1906,7 +2381,7 @@ function drawPremium() {
         title: r.name,
         rows: [
           { k: 'Median', v: fmtMoney(r.med), color: col },
-          { k: 'vs region', v: fmtPct(r.prem, 0) },
+          { k: 'vs ' + baselineLabel(true), v: fmtPct(r.prem, 0) },
           { k: 'Sales', v: fmtInt(r.n) }
         ],
         foot: state.grain === 'district' ? null : r.district
@@ -1916,7 +2391,7 @@ function drawPremium() {
   });
   m.svg.appendChild(g);
 
-  registerTable('premChart', [grainNoun(state.grain), 'Sales', 'Median', 'vs region'],
+  registerTable('premChart', [grainNoun(state.grain), 'Sales', 'Median', 'vs ' + baselineLabel(true)],
     rows.map(function (r) { return [r.name, fmtInt(r.n), fmtMoney(r.med), fmtPct(r.prem, 0)]; }));
 }
 
@@ -2051,12 +2526,16 @@ function drawHeatGrid() {
     for (var mm = 0; mm < 12; mm++) {
       var key = (yr - BASE_YEAR) * 12 + mm;
       var future = key > LAST_MONTH || key < 0;
+      var partial = !future && yr === PARTIAL_YEAR;
       var n = counts[key] || 0;
-      var col = future ? 'transparent' : rampColor(SEQ, n / maxV);
+      // sqrt, not linear: one stamp-duty-deadline month at 278 sales was
+      // compressing three quarters of the grid into the bottom two steps
+      var col = future ? 'transparent' : rampColor(SEQ, Math.sqrt(n / maxV));
       var rect = s('rect', {
         x: pad.l + mm * cellW + 1, y: pad.t + ri * cellH + 1,
         width: cellW - 2, height: cellH - 2, rx: 3,
-        fill: col, stroke: future ? '#1a1e25' : 'none', 'stroke-dasharray': future ? '2 2' : null,
+        fill: col, stroke: future ? '#1a1e25' : (partial ? '#3a4048' : 'none'),
+        'stroke-dasharray': future ? '2 2' : (partial ? '2 2' : null),
         tabindex: future ? null : 0, style: future ? '' : 'cursor:default'
       });
       g.appendChild(rect);
@@ -2074,7 +2553,7 @@ function drawHeatGrid() {
           g.appendChild(s('text', {
             x: pad.l + mm * cellW + cellW / 2, y: pad.t + ri * cellH + cellH / 2 + 3.5,
             'text-anchor': 'middle', 'font-size': 9.5, fill: inkOn(col), 'pointer-events': 'none',
-            opacity: n / maxV > 0.12 ? 1 : 0.6
+            opacity: Math.sqrt(n / maxV) > 0.28 ? 1 : 0.75
           }, String(n)));
         }
       }
@@ -2083,8 +2562,8 @@ function drawHeatGrid() {
   svg.appendChild(g);
 
   scaleLegend('heatScale', [0, 1, 2, 3, 4, 5, 6].map(function (i) {
-    return { lo: Math.round(maxV * i / 6), hi: Math.round(maxV * (i + 1) / 6), color: SEQ[i] };
-  }), function (v) { return fmtInt(v); }, 'sales in the month');
+    return { lo: Math.round(maxV * Math.pow(i / 7, 2)), hi: Math.round(maxV * Math.pow((i + 1) / 7, 2)), color: SEQ[i] };
+  }), function (v) { return fmtInt(v); }, 'sales in the month (square-root scale)');
 
   registerTable('heatGrid', ['Year'].concat(MONTHS),
     years.map(function (yr) {
@@ -2112,6 +2591,34 @@ function drawSeason() {
   yAxis(g, y, niceTicks(0, maxV * 1.12, 4), pad.l, m.w - pad.r, function (v) { return v.toFixed(0) + '%'; });
   g.appendChild(s('line', { x1: pad.l, x2: m.w - pad.r, y1: y(100 / 12), y2: y(100 / 12), stroke: ACCENT_UI, opacity: 0.5 }));
   g.appendChild(s('text', { class: 'lbl', x: m.w - pad.r, y: y(100 / 12) - 5, 'text-anchor': 'end', fill: ACCENT_UI, 'font-size': 10.5 }, 'even split'));
+
+  // The old caption asserted that completions cluster at quarter-ends and that
+  // this was "useful for timing an offer". Neither survives the data: the spread
+  // is a point or two, and price does not vary by month — a quiet month is not a
+  // cheap month. Say what is actually true, computed from the slice in view.
+  var sub = $('seasonSub');
+  if (sub) {
+    var qEnd = (counts[2] + counts[5] + counts[8] + counts[11]) / tot * 100;
+    var rest = 100 - qEnd;
+    var medByMonth = [];
+    for (var mi = 0; mi < 12; mi++) {
+      var pm = [];
+      for (var si = 0; si < slice.length; si++) if (C.date[slice[si]] % 12 === mi) pm.push(C.price[slice[si]]);
+      pm.sort(function (a, b) { return a - b; });
+      medByMonth.push(pm.length >= 12 ? quantile(pm, 0.5) : null);
+    }
+    var valid = medByMonth.filter(function (v) { return v !== null; });
+    var spread = valid.length > 3
+      ? (Math.max.apply(null, valid) - Math.min.apply(null, valid)) / quantile(valid.slice().sort(function (a, b) { return a - b; }), 0.5) * 100
+      : null;
+    sub.textContent = 'Share of sales in the slice completing in each calendar month. A quarter-end month ' +
+      'averages ' + (qEnd / 4).toFixed(1) + '% of the year against ' + (rest / 8).toFixed(1) +
+      '% for the other eight — next to nothing, against the 8.3% an even split would give. ' +
+      (spread !== null
+        ? 'And the median barely moves between months (a ' + spread.toFixed(0) + '% spread across the year), so ' +
+          'a quiet month is not a cheap month — do not read this as a lever on price.'
+        : 'Too few sales here to compare prices between months.');
+  }
 
   var peak = shares.indexOf(maxV);
   shares.forEach(function (v, i) {
@@ -2241,10 +2748,11 @@ function renderSales() {
     return (av - bv) * sc.dir;
   });
 
-  var LIMIT = 400;
-  var shown = rows.slice(0, LIMIT);
+  if (state.repeatOnly) rows = rows.filter(function (i) { var h = RSI.repeatsOf[C.address[i]]; return h && h.length > 1; });
+  var shown = rows.slice(0, state.salesLimit);
   $('salesSub').textContent = 'Showing ' + fmtInt(shown.length) + ' of ' + fmtInt(rows.length) +
-    ' sales in the current slice, newest first by default. Click a column head to sort; click a row to open the Land Registry record.';
+    ' sales in the current slice, newest first by default. Click a column head to sort, an address to open the ' +
+    'Land Registry record, or the ↺ badge on a property that has sold more than once to see its own history.';
 
   var cols = [
     { k: 'date', label: 'Date' },
@@ -2268,28 +2776,110 @@ function renderSales() {
   thead.appendChild(tr); tbl.appendChild(thead);
 
   var tb = el('tbody');
+  var lastYear = RSI.years[RSI.years.length - 1];
   shown.forEach(function (i) {
     var row = el('tr');
-    row.style.cursor = 'pointer';
-    row.title = 'Open the Land Registry record';
-    row.addEventListener('click', function () {
-      window.open('http://landregistry.data.gov.uk/data/ppi/transaction/' + C.txn[i] + '/current', '_blank', 'noopener');
-    });
+    var history = RSI.repeatsOf[C.address[i]];
     var mo = C.date[i];
-    row.appendChild(el('td', null, MONTHS[mo % 12] + ' ' + yearOf(mo)));
-    var tdP = el('td', null, fmtMoney(C.price[i]));
-    tdP.style.color = 'var(--ink)';
-    tdP.style.fontWeight = '650';
+
+    var tdD = el('td', null, MONTHS[mo % 12] + ' ' + yearOf(mo));
+    row.appendChild(tdD);
+
+    var tdP = el('td');
+    var pw = el('div');
+    pw.style.cssText = 'display:flex;align-items:baseline;justify-content:flex-end;gap:8px';
+    var main = el('span', null, fmtMoney(C.price[i]));
+    main.style.cssText = 'color:var(--ink);font-weight:650';
+    pw.appendChild(main);
+    // Restating a past price in today's money using the repeat-sales rate. Off by
+    // default, both figures always shown, rounded to £10k because the confidence
+    // band on the factor alone is about ±4%. It is a historical fact re-expressed,
+    // not a valuation, and it deliberately has no input box.
+    if (state.todayMoney) {
+      var f = RSI.factor(yearOf(mo), lastYear);
+      if (f !== null && Math.abs(f - 1) > 0.005) {
+        var today = Math.round(C.price[i] * f / 10000) * 10000;
+        var t = el('span', null, '≈' + fmtCompact(today));
+        t.style.cssText = 'color:var(--accent);font-weight:650;font-size:11.5px';
+        t.title = 'The same money in ' + lastYear + ' terms, using the region-wide repeat-sales index (±4%). Not a valuation of this house.';
+        pw.appendChild(t);
+      }
+    }
+    tdP.appendChild(pw);
     row.appendChild(tdP);
-    row.appendChild(el('td', 'addr', C.address[i]));
+
+    var tdA = el('td', 'addr');
+    // a real link, so right-click and open-in-new-tab work
+    var a = document.createElement('a');
+    a.href = 'http://landregistry.data.gov.uk/data/ppi/transaction/' + C.txn[i] + '/current';
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = C.address[i];
+    a.style.cssText = 'color:var(--ink);text-decoration:none';
+    tdA.appendChild(a);
+    if (history && history.length > 1) {
+      var badge = el('button', 'repeat-badge', '↺ ' + history.length + ' sales');
+      badge.title = 'This exact property sold ' + history.length + ' times — click for its history';
+      (function (addr) {
+        badge.addEventListener('click', function (ev) {
+          ev.stopPropagation();
+          state.openHistory = (state.openHistory === addr) ? null : addr;
+          renderSales();
+        });
+      })(C.address[i]);
+      tdA.appendChild(badge);
+    }
+    row.appendChild(tdA);
+
     row.appendChild(el('td', null, DICT.ptype[C.ptype[i]] + ((C.flags[i] & F_NEW) ? ' · new' : '')));
     row.appendChild(el('td', null, DICT.zone[C.zone[i]]));
     row.appendChild(el('td', null, DICT.district[C.district[i]]));
     row.appendChild(el('td', null, DICT.pcd[C.pcd[i]]));
     tb.appendChild(row);
+
+    // the same house, sold twice: the most informative record in the file,
+    // because size, plot, street and aspect are all held constant
+    if (history && state.openHistory === C.address[i]) {
+      var hr = el('tr', 'history-row');
+      var td = el('td');
+      td.colSpan = 7;
+      var box = el('div', 'history');
+      box.appendChild(el('div', 'h-title', 'Every recorded sale of this property'));
+      history.forEach(function (j, k) {
+        var line = el('div', 'h-line');
+        line.appendChild(el('span', 'h-date', MONTHS[C.date[j] % 12] + ' ' + yearOf(C.date[j])));
+        line.appendChild(el('span', 'h-price', fmtMoney(C.price[j])));
+        if (k > 0) {
+          var prev = history[k - 1];
+          var yrs = (C.date[j] - C.date[prev]) / 12;
+          var chg = (C.price[j] / C.price[prev] - 1) * 100;
+          var ann = yrs > 0.4 ? (Math.pow(C.price[j] / C.price[prev], 1 / yrs) - 1) * 100 : null;
+          var d = el('span', 'h-delta', fmtPct(chg, 1) + ' over ' + yrs.toFixed(1) + ' yrs' +
+                     (ann !== null ? ' · ' + fmtPct(ann, 1) + '/yr' : ''));
+          d.style.color = divergingColor(chg, 60);
+          line.appendChild(d);
+        } else {
+          line.appendChild(el('span', 'h-delta', 'first recorded sale'));
+        }
+        box.appendChild(line);
+      });
+      box.appendChild(el('div', 'h-note',
+        'Falls are under-counted: a house that dropped below £550,000 leaves this extract entirely, ' +
+        'while every rise stays in. Across the region 10% of repeat pairs resold lower.'));
+      td.appendChild(box);
+      hr.appendChild(td);
+      tb.appendChild(hr);
+    }
   });
   tbl.appendChild(tb);
   host.appendChild(tbl);
+  if (rows.length > shown.length) {
+    var more = el('button', 'btn', 'Show ' + fmtInt(Math.min(400, rows.length - shown.length)) + ' more of ' +
+                  fmtInt(rows.length - shown.length) + ' remaining');
+    more.style.cssText = 'margin-top:14px;width:100%';
+    more.addEventListener('click', function () { state.salesLimit += 400; renderSales(); });
+    host.appendChild(more);
+  }
   if (!shown.length) host.appendChild(el('div', 'empty', 'No sales match the current filters and search.'));
 }
 
@@ -2497,7 +3087,22 @@ function initControls() {
     });
   }
   toggle('fSearch', 'search');
-  toggle('fNew', 'newBuild');
+
+  // New build cycles all -> only -> exclude. aria-pressed cannot express three
+  // states, so the label carries it and aria-pressed tracks "is filtering".
+  var nb = $('fNew');
+  function paintNewBuild() {
+    nb.textContent = state.newBuild === 1 ? 'New build only'
+                   : state.newBuild === -1 ? 'Excluding new build' : 'New build';
+    nb.setAttribute('aria-pressed', state.newBuild ? 'true' : 'false');
+  }
+  nb.addEventListener('click', function () {
+    state.newBuild = state.newBuild === 0 ? 1 : (state.newBuild === 1 ? -1 : 0);
+    paintNewBuild();
+    refresh();
+  });
+  PAINT_NEW_BUILD = paintNewBuild;
+  paintNewBuild();
 
   var yf = $('yrFrom'), yt = $('yrTo');
   yf.max = yt.max = LAST_YEAR;
@@ -2515,9 +3120,13 @@ function initControls() {
 
   $('reset').addEventListener('click', function () {
     state.y0 = BASE_YEAR; state.y1 = LAST_YEAR;
-    state.county = ''; state.district = ''; state.village = ''; state.ptype = ''; state.bands = {};
-    state.search = false; state.newBuild = false;
-    state.mapSel = null; state.salesQuery = '';
+    state.county = ''; state.district = ''; state.village = ''; state.area = null;
+    state.ptype = ''; state.bands = {};
+    state.search = false; state.newBuild = 0;
+    state.mapSel = null; state.salesQuery = ''; state.salesLimit = 400;
+    state.todayMoney = false; state.repeatOnly = false; state.openHistory = null;
+    $('fToday').setAttribute('aria-pressed', 'false');
+    $('fRepeat').setAttribute('aria-pressed', 'false');
     yf.value = BASE_YEAR; yt.value = LAST_YEAR;
     $('yrFromV').textContent = BASE_YEAR; $('yrToV').textContent = LAST_YEAR;
     csel.value = ''; tsel.value = ''; $('fVillage').value = '';
@@ -2526,7 +3135,7 @@ function initControls() {
     var chips = $('fBands').querySelectorAll('.chip');
     for (var k = 0; k < chips.length; k++) chips[k].setAttribute('aria-pressed', 'false');
     $('fSearch').setAttribute('aria-pressed', 'false');
-    $('fNew').setAttribute('aria-pressed', 'false');
+    if (PAINT_NEW_BUILD) PAINT_NEW_BUILD();
     refresh();
   });
 
@@ -2535,6 +3144,7 @@ function initControls() {
     (function (tab) {
       tab.addEventListener('click', function () {
         state.view = tab.dataset.view;
+        writeUrlState();
         for (var k = 0; k < tabs.length; k++) tabs[k].setAttribute('aria-selected', tabs[k] === tab ? 'true' : 'false');
         showView();
       });
@@ -2567,9 +3177,37 @@ function initControls() {
   vsel.addEventListener('input', function () {
     clearTimeout(villageTimer);
     villageTimer = setTimeout(function () {
-      state.village = vsel.value.trim().toLowerCase();
+      var typed = vsel.value.trim();
+      var exact = AREA_INDEX[typed.toLowerCase()];
+      if (exact) {
+        // an exact hit scopes cleanly to that one area rather than pooling
+        // every settlement whose name merely contains the text
+        state.area = { kind: exact.kind, name: exact.name };
+        state.village = '';
+        if (state.grain === exact.kind) state.grain = 'settlement';
+      } else {
+        state.area = null;
+        state.village = typed.toLowerCase();
+      }
       refresh();
     }, 180);
+  });
+
+  $('dlCsv').addEventListener('click', downloadCsv);
+  var todayBtn = $('fToday');
+  todayBtn.addEventListener('click', function () {
+    state.todayMoney = !state.todayMoney;
+    todayBtn.setAttribute('aria-pressed', state.todayMoney ? 'true' : 'false');
+    writeUrlState();
+    renderSales();
+  });
+  var repeatBtn = $('fRepeat');
+  repeatBtn.addEventListener('click', function () {
+    state.repeatOnly = !state.repeatOnly;
+    repeatBtn.setAttribute('aria-pressed', state.repeatOnly ? 'true' : 'false');
+    state.salesLimit = 400;
+    writeUrlState();
+    renderSales();
   });
 
   var search = $('salesSearch');
@@ -2577,6 +3215,132 @@ function initControls() {
   search.addEventListener('input', function () {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(function () { state.salesQuery = search.value; renderSales(); }, 160);
+  });
+}
+
+// ------------------------------------------------------- export + URL state
+
+// The end product of this tool is a list of specific sold prices you can name
+// in a conversation. Export the WHOLE filtered set, not the rows on screen.
+function downloadCsv() {
+  var head = ['date', 'price', 'address', 'settlement', 'street', 'postcode_district', 'postcode_sector',
+              'settlement_zone', 'district', 'county', 'property_type', 'new_build',
+              'in_search_geography', 'land_registry_url'];
+  if (state.todayMoney) head.splice(2, 0, 'price_in_' + RSI.years[RSI.years.length - 1] + '_money');
+  var lastY = RSI.years[RSI.years.length - 1];
+  var q = function (v) {
+    v = v === null || v === undefined ? '' : String(v);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  var lines = [head.join(',')];
+  for (var k = 0; k < slice.length; k++) {
+    var i = slice[k];
+    var mo = C.date[i], y = yearOf(mo), mth = (mo % 12) + 1;
+    var iso = y + '-' + (mth < 10 ? '0' : '') + mth + '-' + (C.day[i] < 10 ? '0' : '') + C.day[i];
+    var row = [iso, C.price[i]];
+    if (state.todayMoney) {
+      var f = RSI.factor(y, lastY);
+      row.push(f === null ? '' : Math.round(C.price[i] * f / 10000) * 10000);
+    }
+    row = row.concat([
+      C.address[i], DICT.settlement[C.settlement[i]], DICT.street[C.street[i]],
+      DICT.pcd[C.pcd[i]], DICT.sector[C.sector[i]], DICT.zone[C.zone[i]],
+      DICT.district[C.district[i]], COUNTY_OF[DICT.district[C.district[i]]] || '',
+      DICT.ptype[C.ptype[i]], (C.flags[i] & F_NEW) ? 'yes' : 'no',
+      (C.flags[i] & F_SEARCH) ? 'yes' : 'no',
+      'http://landregistry.data.gov.uk/data/ppi/transaction/' + C.txn[i] + '/current'
+    ]);
+    lines.push(row.map(q).join(','));
+  }
+  var blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = 'east-midlands-550k-' + fmtInt(slice.length).replace(/,/g, '') + '-sales.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+}
+
+// Serialise the filter state into the URL so a reload, a bookmark or a link
+// reproduces exactly this view. Over weeks of a search, "is this week's reading
+// comparable to last week's" matters more than it sounds: a one-year shift in
+// the year slider changes which villages clear the sample threshold.
+var STATE_KEYS = ['y0', 'y1', 'county', 'district', 'village', 'ptype', 'search',
+                  'newBuild', 'view', 'grain', 'mapMetric', 'todayMoney', 'repeatOnly'];
+var restoringState = false;
+function writeUrlState() {
+  if (restoringState) return;
+  var parts = [];
+  STATE_KEYS.forEach(function (k) {
+    var v = state[k];
+    if (v === '' || v === false || v === null || v === undefined) return;
+    if (k === 'newBuild' && v === 0) return;
+    if (k === 'y0' && v === BASE_YEAR) return;
+    if (k === 'y1' && v === LAST_YEAR) return;
+    if (k === 'view' && v === 'pulse') return;
+    if (k === 'grain' && v === 'zone') return;
+    if (k === 'mapMetric' && v === 'volume') return;
+    parts.push(k + '=' + encodeURIComponent(v));
+  });
+  if (state.area) parts.push('area=' + encodeURIComponent(state.area.kind + '~' + state.area.name));
+  var bands = Object.keys(state.bands);
+  if (bands.length) parts.push('bands=' + encodeURIComponent(bands.join(',')));
+  var hash = parts.length ? '#' + parts.join('&') : '';
+  try {
+    history.replaceState(null, '', location.pathname + location.search + hash);
+  } catch (e) {
+    // file:// refuses replaceState; assigning the hash still works there
+    if (location.hash !== hash) location.hash = hash;
+  }
+}
+function readUrlState() {
+  var h = location.hash.replace(/^#/, '');
+  if (!h) return false;
+  restoringState = true;
+  h.split('&').forEach(function (pair) {
+    var eq = pair.indexOf('=');
+    if (eq < 0) return;
+    var k = pair.slice(0, eq), v = decodeURIComponent(pair.slice(eq + 1));
+    if (k === 'bands') { state.bands = {}; v.split(',').forEach(function (b) { state.bands[b] = true; }); return; }
+    if (k === 'area') {
+      var t = v.split('~');
+      if (t.length === 2) state.area = { kind: t[0], name: t[1] };
+      return;
+    }
+    if (STATE_KEYS.indexOf(k) < 0) return;
+    if (k === 'y0' || k === 'y1' || k === 'newBuild') state[k] = parseInt(v, 10) || 0;
+    else if (k === 'search' || k === 'todayMoney' || k === 'repeatOnly') state[k] = (v === 'true' || v === '1');
+    else state[k] = v;
+  });
+  restoringState = false;
+  return true;
+}
+
+// Push a restored-from-URL state back into the controls, so the widgets agree
+// with what the charts are showing.
+function syncControlsFromState() {
+  $('yrFrom').value = state.y0; $('yrTo').value = state.y1;
+  $('yrFromV').textContent = state.y0; $('yrToV').textContent = state.y1;
+  $('fCounty').value = state.county;
+  rebuildDistrictOptions();
+  $('fType').value = state.ptype;
+  $('fVillage').value = state.area ? state.area.name : state.village;
+  $('fSearch').setAttribute('aria-pressed', state.search ? 'true' : 'false');
+  $('fToday').setAttribute('aria-pressed', state.todayMoney ? 'true' : 'false');
+  $('fRepeat').setAttribute('aria-pressed', state.repeatOnly ? 'true' : 'false');
+  if (PAINT_NEW_BUILD) PAINT_NEW_BUILD();
+  var chips = $('fBands').querySelectorAll('.chip');
+  for (var k = 0; k < chips.length; k++) {
+    chips[k].setAttribute('aria-pressed', state.bands[BANDS[k].key] ? 'true' : 'false');
+  }
+  var tabs = document.querySelectorAll('.tab');
+  for (var t = 0; t < tabs.length; t++) {
+    tabs[t].setAttribute('aria-selected', tabs[t].dataset.view === state.view ? 'true' : 'false');
+  }
+  ['pulse', 'map', 'momentum', 'value', 'rhythm', 'sales'].forEach(function (v) {
+    $('v-' + v).hidden = v !== state.view;
   });
 }
 
@@ -2611,29 +3375,49 @@ function rebuildVillageList() {
   if (sig === villageSig) return;
   villageSig = sig;
 
+  // one list across villages, zones, postcode districts and sectors, so a single
+  // box scopes to any of the units the charts actually aggregate by
   var counts = {};
   for (var i = 0; i < N; i++) {
     if (!passes(i, true)) continue;
-    var nm = DICT.settlement[C.settlement[i]];
-    counts[nm] = (counts[nm] || 0) + 1;
+    for (var k = 0; k < AREA_KINDS.length; k++) {
+      var kind = AREA_KINDS[k].kind, nm = areaValue(kind, i);
+      if (!nm || nm === '—') continue;
+      if (!counts[kind]) counts[kind] = {};
+      counts[kind][nm] = (counts[kind][nm] || 0) + 1;
+    }
   }
-  var names = Object.keys(counts).sort(function (a, b) {
-    return counts[b] - counts[a] || a.localeCompare(b);
+  // keyed by kind then name, so an area name containing a space or any
+  // separator character cannot corrupt the lookup
+  var entries = [];
+  Object.keys(counts).forEach(function (kind) {
+    Object.keys(counts[kind]).forEach(function (nm) {
+      entries.push({ kind: kind, name: nm, n: counts[kind][nm] });
+    });
   });
+  entries.sort(function (a, b) { return b.n - a.n || a.name.localeCompare(b.name); });
 
+  AREA_INDEX = {};
   var list = $('villageList');
   clear(list);
-  names.forEach(function (nm) {
+  entries.forEach(function (e) {
+    // first kind to claim a name wins the plain-text lookup; villages are first
+    // in AREA_KINDS so "Oakham" resolves to the village, not a zone of that name
+    var lower = e.name.toLowerCase();
+    if (!AREA_INDEX[lower]) AREA_INDEX[lower] = e;
     var o = document.createElement('option');
-    o.value = nm;
-    o.label = nm + ' — ' + counts[nm] + ' sale' + (counts[nm] === 1 ? '' : 's');
+    o.value = e.name;
+    o.label = e.name + ' — ' + areaKindLabel(e.kind) + ', ' + e.n + ' sale' + (e.n === 1 ? '' : 's');
     list.appendChild(o);
   });
 }
+var AREA_INDEX = {};
+var PAINT_NEW_BUILD = null;
 
 function refresh() {
   rebuildSlice();
   rebuildVillageList();
+  writeUrlState();
   var pct = (slice.length / N * 100).toFixed(0);
   var sc = $('sliceCount');
   clear(sc);
@@ -2649,7 +3433,13 @@ window.addEventListener('resize', function () {
   resizeTimer = setTimeout(renderActive, 180);
 });
 
+// Exposed so the index can be audited from the console rather than taken on
+// trust — EM_DEBUG.rsi.level is the full annual series.
+window.EM_DEBUG = { rsi: RSI, state: state };
+
+readUrlState();
 initControls();
+syncControlsFromState();
 refresh();
 
 })();
