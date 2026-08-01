@@ -616,6 +616,43 @@ function baselineLabel(shortForm) {
 }
 function isUnfiltered() { return baselineLabel(true) === 'region'; }
 
+// Zone names come from the source data and several are opaque or downright
+// misleading on their own — "Town" is not a place, it is a category meaning
+// "the town this district revolves around", so it reads as Stamford in South
+// Kesteven and Oakham in Rutland. Never show a zone name without saying which
+// settlements are actually in it.
+var ZONE_MAKEUP = {};
+function zoneMakeup(zone, district, limit) {
+  var key = zone + '|' + (district || '') + '|' + (limit || 3);
+  if (ZONE_MAKEUP[key]) return ZONE_MAKEUP[key];
+  var counts = {}, total = 0;
+  for (var i = 0; i < N; i++) {
+    if (DICT.zone[C.zone[i]] !== zone) continue;
+    if (district && DICT.district[C.district[i]] !== district) continue;
+    var nm = DICT.settlement[C.settlement[i]];
+    counts[nm] = (counts[nm] || 0) + 1;
+    total++;
+  }
+  var names = Object.keys(counts).sort(function (a, b) { return counts[b] - counts[a]; });
+  var top = names.slice(0, limit || 3);
+  var out = {
+    names: names, top: top, total: total,
+    // "Stamford, Market Deeping and 12 more"
+    text: top.length
+      ? top.join(', ') + (names.length > top.length ? ' and ' + (names.length - top.length) + ' more' : '')
+      : ''
+  };
+  ZONE_MAKEUP[key] = out;
+  return out;
+}
+// how many districts a zone spans — a zone in more than one is a classification
+// as much as a geography, and the user should be told
+function zoneSpread(zone) {
+  var ds = {};
+  for (var i = 0; i < N; i++) if (DICT.zone[C.zone[i]] === zone) ds[DICT.district[C.district[i]]] = 1;
+  return Object.keys(ds);
+}
+
 function dominantDistrict(idx) {
   var c = {}, best = null, bn = 0;
   for (var i = 0; i < idx.length; i++) {
@@ -1310,8 +1347,9 @@ function drawMovers() {
 
     var hit = s('rect', { class: 'hit', x: pad.l - 145, y: pad.t + i * rowH, width: m.w - pad.l + 140, height: rowH, tabindex: 0 });
     bindTip(hit, function () {
+      var mk = zoneMakeup(r.name, null, 3);
       return {
-        title: r.name,
+        title: r.name + (mk.text ? ' — ' + mk.top.slice(0, 2).join(', ') : ''),
         rows: [
           { k: 'Sales, latest ' + w.w + ' months', v: fmtInt(r.nRecent), color: col },
           { k: 'Sales, previous ' + w.w + ' months', v: fmtInt(r.nPrior) },
@@ -1845,8 +1883,9 @@ function drawTreemap() {
         fill: col, rx: 2, tabindex: 0, style: 'cursor:pointer'
       });
       bindTip(rect, function () {
+        var mk = zoneMakeup(z.item.name, d.name, 5);
         return {
-          title: z.item.name,
+          title: z.item.name + (mk.text ? ' — ' + mk.top.slice(0, 2).join(', ') : ''),
           rows: [
             { k: 'Sales', v: fmtInt(z.item.value), color: col },
             { k: 'At £1m and over', v: z.item.prime.toFixed(1) + '%' },
@@ -1854,7 +1893,7 @@ function drawTreemap() {
             { k: 'Middle half', v: fmtCompact(z.item.stats.p25) + '–' + fmtCompact(z.item.stats.p75) },
             { k: 'Dearest sale', v: fmtCompact(z.item.stats.max) }
           ],
-          foot: d.name
+          foot: d.name + (mk.text ? ' · covers ' + mk.text : '')
         };
       });
       rect.addEventListener('click', function () { scopeTo('zone', z.item.name); });
@@ -1862,10 +1901,22 @@ function drawTreemap() {
       rect.addEventListener('pointerleave', function () { rect.removeAttribute('stroke'); });
       g.appendChild(rect);
       if (z.w > 62 && z.h > 22) {
+        var ink = inkOn(col);
         g.appendChild(s('text', {
           x: z.x + 5, y: z.y + 14, 'font-size': 10, 'font-weight': 600,
-          fill: inkOn(col), 'pointer-events': 'none'
+          fill: ink, 'pointer-events': 'none'
         }, truncate(z.item.name, Math.floor((z.w - 8) / 5.6))));
+        // a zone name alone is not a place — say which settlements it covers
+        if (z.h > 38) {
+          var mk = zoneMakeup(z.item.name, d.name, 3);
+          var room = Math.floor((z.w - 8) / 5.0);
+          if (mk.text && room > 8) {
+            g.appendChild(s('text', {
+              x: z.x + 5, y: z.y + 26, 'font-size': 9, 'font-weight': 400,
+              fill: ink, opacity: 0.72, 'pointer-events': 'none'
+            }, truncate(mk.top.join(', '), room)));
+          }
+        }
       }
     });
   });
@@ -1908,10 +1959,15 @@ function mountGrainControl(head, onChange) {
       });
       box.appendChild(b);
     });
+    var lbl = el('span', 'ctl-label', 'Detail');
+    lbl.style.cssText = 'align-self:center;margin-right:2px';
+    box.insertBefore(lbl, box.firstChild);
+    bindHelp(lbl, 'grain');
     head.appendChild(box);
   }
   var chips = box.querySelectorAll('.chip');
   for (var i = 0; i < chips.length; i++) {
+    if (!chips[i].dataset.grain) continue;
     chips[i].setAttribute('aria-pressed', chips[i].dataset.grain === state.grain ? 'true' : 'false');
   }
   return box;
@@ -2012,7 +2068,7 @@ function drawScatter(mo) {
     });
     bindTip(c, function () {
       return {
-        title: r.name,
+        title: r.name + (state.grain === 'zone' ? ' — ' + zoneMakeup(r.name, null, 2).top.join(', ') : ''),
         rows: [
           { k: 'Median price', v: fmtMoney(r.med), color: col },
           { k: 'Sales, last ' + mo.win.w + ' months', v: fmtInt(r.nRecent) },
@@ -2126,7 +2182,12 @@ function drawMoversTable(mo) {
     (function (nm) { tdName.addEventListener('click', function () { scopeTo(state.grain, nm); }); })(r.name);
     tdName.appendChild(document.createTextNode(r.name));
     if (state.grain !== 'district') {
-      var sm = el('small', null, ' · ' + r.district);
+      var note = r.district;
+      if (state.grain === 'zone') {
+        var mk = zoneMakeup(r.name, null, 3);
+        if (mk.text) note = mk.top.join(', ') + ' · ' + r.district;
+      }
+      var sm = el('small', null, ' · ' + note);
       sm.style.color = 'var(--ink-3)';
       sm.style.fontWeight = '400';
       tdName.appendChild(sm);
@@ -2317,7 +2378,7 @@ function drawDist() {
     var hit = s('rect', { class: 'hit', x: 0, y: pad.t + i * rowH, width: m.w, height: rowH, tabindex: 0 });
     bindTip(hit, function () {
       return {
-        title: r.name,
+        title: r.name + (state.grain === 'zone' ? ' — ' + zoneMakeup(r.name, null, 2).top.join(', ') : ''),
         rows: [
           { k: 'Median', v: fmtMoney(r.med), color: ACCENT_UI },
           { k: 'Middle half', v: fmtMoney(r.p25) + ' – ' + fmtMoney(r.p75) },
@@ -2949,6 +3010,18 @@ var HELP = {
           'switch the Momentum and Value tabs to zone-level detail within it.',
     foot: null
   },
+  grain: {
+    title: 'Detail level',
+    body: 'How finely the charts group sales. Districts are the eight local authorities. ' +
+          '“Settlement zones” are the source data’s own grouping of villages that trade as one market — ' +
+          'useful, but the names are its names, not official places, and one of them is a trap: ' +
+          '“Town” is not a town. It means “the town this district revolves around”, so it is Stamford ' +
+          'and the Deepings in South Kesteven but Oakham and Uppingham in Rutland, and it spans six ' +
+          'districts in total. Every zone now shows the settlements it covers. Postcode districts and ' +
+          'sectors are postal geography, which splits a big town that is a single row everywhere else. ' +
+          'Villages are the finest unit and the one you actually shop in.',
+    foot: null
+  },
   village: {
     title: 'Village',
     body: 'Scopes everything to one village or settlement — start typing and the list suggests only ' +
@@ -3122,7 +3195,7 @@ function initControls() {
     state.y0 = BASE_YEAR; state.y1 = LAST_YEAR;
     state.county = ''; state.district = ''; state.village = ''; state.area = null;
     state.ptype = ''; state.bands = {};
-    state.search = false; state.newBuild = 0;
+    state.search = false; state.newBuild = 0; state.grain = 'zone';
     state.mapSel = null; state.salesQuery = ''; state.salesLimit = 400;
     state.todayMoney = false; state.repeatOnly = false; state.openHistory = null;
     $('fToday').setAttribute('aria-pressed', 'false');
@@ -3407,7 +3480,12 @@ function rebuildVillageList() {
     if (!AREA_INDEX[lower]) AREA_INDEX[lower] = e;
     var o = document.createElement('option');
     o.value = e.name;
-    o.label = e.name + ' — ' + areaKindLabel(e.kind) + ', ' + e.n + ' sale' + (e.n === 1 ? '' : 's');
+    var extra = '';
+    if (e.kind === 'zone') {
+      var mk = zoneMakeup(e.name, null, 3);
+      if (mk.text) extra = ' — ' + mk.top.join(', ');
+    }
+    o.label = e.name + extra + ' · ' + areaKindLabel(e.kind) + ', ' + e.n + ' sale' + (e.n === 1 ? '' : 's');
     list.appendChild(o);
   });
 }
@@ -3424,6 +3502,19 @@ function refresh() {
   var b = el('b', null, fmtInt(slice.length));
   sc.appendChild(b);
   sc.appendChild(document.createTextNode(' of ' + fmtInt(N) + ' home sales (' + pct + '%)'));
+  // scoping to a zone that spans districts mixes places that are nowhere near
+  // each other — "Town" pools Stamford with Skegness
+  if (state.area && state.area.kind === 'zone') {
+    var ds = zoneSpread(state.area.name);
+    if (ds.length > 1) {
+      var warn = el('span', null, ' · spans ' + ds.length + ' districts');
+      warn.style.color = 'var(--accent)';
+      warn.title = state.area.name + ' covers ' + zoneMakeup(state.area.name, null, 8).text +
+                   ', across ' + ds.join(', ') + '. It is a classification, not one place.';
+      warn.style.cursor = 'help';
+      sc.appendChild(warn);
+    }
+  }
   renderActive();
 }
 

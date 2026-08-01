@@ -112,6 +112,14 @@ You can audit it from the browser console: `EM_DEBUG.rsi.level`.
   never capped, so genuine country houses such as Normanton Manor at £4.55m stay.
 - **Three postcode districts vanish as a result** — DN17, LE67 and the non-geographic NG80 — because
   every £550k+ record they held was non-residential. That drops the map from 51 shapes to 49.
+- **"Settlement zone" names are the source data's, not official places — and one is a trap.**
+  **"Town" is not a town.** It is a category meaning "the town this district revolves around", so it
+  reads as Stamford and the Deepings (791 sales) in South Kesteven, Oakham and Uppingham in Rutland,
+  Bingham in Rushcliffe, and Horncastle and Skegness in East Lindsey. It spans six districts, so
+  scoping to it pools places nowhere near each other. Every zone now prints the settlements it
+  actually covers — on the treemap tile, in every tooltip, in the movers table and in the Area
+  type-ahead — and scoping to a zone that spans more than one district shows a warning beside the
+  sales count.
 - **"Search area"** filters to `in_search_geography = yes`.
 - **Counties group the districts** as follows: Lincolnshire (East Lindsey, West Lindsey, North
   Kesteven, South Kesteven), Nottinghamshire (Rushcliffe, Newark and Sherwood), Leicestershire
