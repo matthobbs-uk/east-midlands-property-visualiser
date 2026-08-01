@@ -657,6 +657,14 @@ function zoneSpread(zone) {
 // names never mention any of their own leading settlements, so "Rutland
 // Villages", "Cliff Villages" and above all "Town" name nowhere the reader can
 // place. Every zone row label carries its settlements.
+function areaLabelText(name, grain, maxChars) {
+  if (grain !== 'zone') return truncate(name, maxChars);
+  var mk = zoneMakeup(name, null, 1);
+  if (!mk.text) return truncate(name, maxChars);
+  var joined = name + ' · ' + mk.top[0];
+  return joined.length <= maxChars ? joined : truncate(name, maxChars);
+}
+
 function axisRowLabel(g, xEnd, y, name, grain, widthBudget) {
   var t = s('text', { class: 'lbl', x: xEnd, y: y, 'text-anchor': 'end' });
   var mk = (grain === 'zone') ? zoneMakeup(name, null, 2) : null;
@@ -664,12 +672,12 @@ function axisRowLabel(g, xEnd, y, name, grain, widthBudget) {
   var charW = 5.45;
   var maxChars = Math.max(10, Math.floor(widthBudget / charW));
 
-  if (!makeup || maxChars < name.length + 10) {
+  if (!makeup || maxChars < name.length + 7) {
     t.appendChild(document.createTextNode(truncate(name, maxChars)));
     g.appendChild(t);
     return t;
   }
-  var room = maxChars - name.length - 3;
+  var room = Math.max(4, maxChars - name.length - 3);
   var n1 = s('tspan', { fill: '#a9aeb8' }, name);
   var n2 = s('tspan', { fill: '#737a86' }, ' · ' + truncate(makeup, room));
   t.appendChild(n1);
@@ -814,6 +822,22 @@ function divergingColor(v, maxAbs) {
 // --------------------------------------------------------------- table twin
 
 function registerTable(id, cols, rows) { TABLES[id] = { cols: cols, rows: rows }; }
+
+// A table of zone names is as unreadable as a chart of them. Where the rows are
+// zones, insert what each one covers straight after the name.
+function withCovers(grain, cols, rows, nameIndex) {
+  if (grain !== 'zone') return { cols: cols, rows: rows };
+  var at = (nameIndex || 0) + 1;
+  var c2 = cols.slice();
+  c2.splice(at, 0, 'Covers');
+  var r2 = rows.map(function (r) {
+    var out = r.slice();
+    var mk = zoneMakeup(String(r[nameIndex || 0]), null, 4);
+    out.splice(at, 0, mk.text || '—');
+    return out;
+  });
+  return { cols: c2, rows: r2 };
+}
 
 function openTable(btn) {
   var id = btn.dataset.table, t = TABLES[id];
@@ -1390,10 +1414,12 @@ function drawMovers() {
   });
   m.svg.appendChild(g);
 
-  registerTable('moversChart', ['Settlement zone', 'District', 'Sales now', 'Sales before', 'Volume change', 'Median now'],
+  var movTbl = withCovers('zone',
+    ['Settlement zone', 'District', 'Sales now', 'Sales before', 'Volume change', 'Median now'],
     sorted.map(function (r) {
       return [r.name, r.district, fmtInt(r.nRecent), fmtInt(r.nPrior), fmtPct(r.volChange, 0), fmtCompact(r.medRecent)];
     }));
+  registerTable('moversChart', movTbl.cols, movTbl.rows);
 }
 
 function truncate(str, n) { return str.length > n ? str.slice(0, n - 1) + '…' : str; }
@@ -1929,15 +1955,21 @@ function drawTreemap() {
       g.appendChild(rect);
       if (z.w > 62 && z.h > 22) {
         var ink = inkOn(col);
+        // A zone name alone is not a place. Give it a second line where the tile
+        // is tall enough, fold it onto one line where it is not, and only fall
+        // back to the bare name when neither fits — the tooltip still has it.
+        var mk = zoneMakeup(z.item.name, d.name, 3);
+        var wideRoom = Math.floor((z.w - 8) / 5.6);
+        var twoLine = z.h > 38 && mk.text;
+        var inline = !twoLine && mk.text &&
+                     (z.item.name.length + mk.top[0].length + 3) <= wideRoom;
         g.appendChild(s('text', {
           x: z.x + 5, y: z.y + 14, 'font-size': 10, 'font-weight': 600,
           fill: ink, 'pointer-events': 'none'
-        }, truncate(z.item.name, Math.floor((z.w - 8) / 5.6))));
-        // a zone name alone is not a place — say which settlements it covers
-        if (z.h > 38) {
-          var mk = zoneMakeup(z.item.name, d.name, 3);
+        }, truncate(inline ? z.item.name + ' · ' + mk.top[0] : z.item.name, wideRoom)));
+        if (twoLine) {
           var room = Math.floor((z.w - 8) / 5.0);
-          if (mk.text && room > 8) {
+          if (room > 8) {
             g.appendChild(s('text', {
               x: z.x + 5, y: z.y + 26, 'font-size': 9, 'font-weight': 400,
               fill: ink, opacity: 0.72, 'pointer-events': 'none'
@@ -1956,7 +1988,9 @@ function drawTreemap() {
                  fmtCompact(z.stats.p25) + '–' + fmtCompact(z.stats.p75), fmtCompact(z.stats.max)]);
     });
   });
-  registerTable('treemap', ['Settlement zone', 'District', 'Sales', '£1m+ share', 'Median', 'Middle half', 'Dearest'], rows);
+  var treeTbl = withCovers('zone',
+    ['Settlement zone', 'District', 'Sales', '£1m+ share', 'Median', 'Middle half', 'Dearest'], rows);
+  registerTable('treemap', treeTbl.cols, treeTbl.rows);
 }
 
 // ==========================================================================
@@ -2125,16 +2159,20 @@ function drawScatter(mo) {
       class: 'lbl', x: cx + (right ? rr + 6 : -rr - 6), y: cy + 4,
       'text-anchor': right ? 'start' : 'end', fill: '#f4f2ee', 'font-size': 11.5, 'font-weight': 600,
       'pointer-events': 'none', 'paint-order': 'stroke', stroke: 'rgba(20,23,28,0.85)', 'stroke-width': 3
-    }, truncate(r.name, 20)));
+    }, areaLabelText(r.name, state.grain, 42)));
   });
 
   m.svg.appendChild(g);
 
-  registerTable('scatter',
+  // "Median change" lives here rather than on the chart's y-axis: at these
+  // sample sizes it is not distinguishable from chance, so it is a number to
+  // look up, not a position to read.
+  var scatTbl = withCovers(state.grain,
     [grainNoun(state.grain), 'Sales now', 'Sales before', 'Volume change', 'Median now', 'Median change'],
     rows.slice().sort(function (a, b) { return b.volChange - a.volChange; }).map(function (r) {
       return [r.name, fmtInt(r.nRecent), fmtInt(r.nPrior), fmtPct(r.volChange, 0), fmtMoney(r.medRecent), fmtPct(r.medChange)];
     }));
+  registerTable('scatter', scatTbl.cols, scatTbl.rows);
 }
 
 // a signed value in ink, with a small diverging bar carrying the colour —
@@ -2428,10 +2466,12 @@ function drawDist() {
   ]);
   lg.style.marginTop = '12px';
 
-  registerTable('distChart', [grainNoun(state.grain), 'Sales', '10th', '25th', 'Median', '75th', '90th', 'Dearest'],
+  var distTbl = withCovers(state.grain,
+    [grainNoun(state.grain), 'Sales', '10th', '25th', 'Median', '75th', '90th', 'Dearest'],
     all.slice().sort(function (a, b) { return b.med - a.med; }).map(function (r) {
       return [r.name, fmtInt(r.n), fmtCompact(r.p10), fmtCompact(r.p25), fmtMoney(r.med), fmtCompact(r.p75), fmtCompact(r.p90), fmtCompact(r.max)];
     }));
+  registerTable('distChart', distTbl.cols, distTbl.rows);
 }
 
 function drawPremium() {
@@ -2447,7 +2487,7 @@ function drawPremium() {
 
   var m = mount('premChart', Math.max(200, show.length * 24 + 34));
   if (!show.length) return emptyChart(m);
-  var pad = { t: 8, r: 56, b: 22, l: Math.max(140, Math.min(330, Math.round(m.w * 0.32))) };
+  var pad = { t: 8, r: 56, b: 22, l: Math.max(150, Math.min(330, Math.round(m.w * 0.38))) };
   var maxAbs = Math.max.apply(null, show.map(function (r) { return Math.abs(r.prem); })) || 1;
   var x = linear(-maxAbs, maxAbs, pad.l, m.w - pad.r);
   var rowH = (m.h - pad.t - pad.b) / show.length;
@@ -2480,8 +2520,10 @@ function drawPremium() {
   });
   m.svg.appendChild(g);
 
-  registerTable('premChart', [grainNoun(state.grain), 'Sales', 'Median', 'vs ' + baselineLabel(true)],
+  var premTbl = withCovers(state.grain,
+    [grainNoun(state.grain), 'Sales', 'Median', 'vs ' + baselineLabel(true)],
     rows.map(function (r) { return [r.name, fmtInt(r.n), fmtMoney(r.med), fmtPct(r.prem, 0)]; }));
+  registerTable('premChart', premTbl.cols, premTbl.rows);
 }
 
 function drawLadder() {
@@ -2921,7 +2963,11 @@ function renderSales() {
     row.appendChild(tdA);
 
     row.appendChild(el('td', null, DICT.ptype[C.ptype[i]] + ((C.flags[i] & F_NEW) ? ' · new' : '')));
-    row.appendChild(el('td', null, DICT.zone[C.zone[i]]));
+    var zName = DICT.zone[C.zone[i]];
+    var tdZ = el('td', null, zName);
+    var zmk = zoneMakeup(zName, null, 4);
+    if (zmk.text) tdZ.title = zName + ' covers ' + zmk.text;
+    row.appendChild(tdZ);
     row.appendChild(el('td', null, DICT.district[C.district[i]]));
     row.appendChild(el('td', null, DICT.pcd[C.pcd[i]]));
     tb.appendChild(row);
