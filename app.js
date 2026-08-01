@@ -653,6 +653,31 @@ function zoneSpread(zone) {
   return Object.keys(ds);
 }
 
+// A ranked list of zone names is close to useless on its own: 32 of the 47 zone
+// names never mention any of their own leading settlements, so "Rutland
+// Villages", "Cliff Villages" and above all "Town" name nowhere the reader can
+// place. Every zone row label carries its settlements.
+function axisRowLabel(g, xEnd, y, name, grain, widthBudget) {
+  var t = s('text', { class: 'lbl', x: xEnd, y: y, 'text-anchor': 'end' });
+  var mk = (grain === 'zone') ? zoneMakeup(name, null, 2) : null;
+  var makeup = mk && mk.text ? mk.top.join(', ') : '';
+  var charW = 5.45;
+  var maxChars = Math.max(10, Math.floor(widthBudget / charW));
+
+  if (!makeup || maxChars < name.length + 10) {
+    t.appendChild(document.createTextNode(truncate(name, maxChars)));
+    g.appendChild(t);
+    return t;
+  }
+  var room = maxChars - name.length - 3;
+  var n1 = s('tspan', { fill: '#a9aeb8' }, name);
+  var n2 = s('tspan', { fill: '#737a86' }, ' · ' + truncate(makeup, room));
+  t.appendChild(n1);
+  t.appendChild(n2);
+  g.appendChild(t);
+  return t;
+}
+
 function dominantDistrict(idx) {
   var c = {}, best = null, bn = 0;
   for (var i = 0; i < idx.length; i++) {
@@ -1325,7 +1350,7 @@ function drawMovers() {
   });
 
   var m = mount('moversChart', Math.max(200, rows.length * 26 + 40));
-  var pad = { t: 8, r: 60, b: 24, l: 150 };
+  var pad = { t: 8, r: 60, b: 24, l: Math.max(140, Math.min(300, Math.round(m.w * 0.36))) };
   var maxAbs = Math.max.apply(null, rows.map(function (r) { return Math.abs(r.volChange); }));
   var x = linear(-maxAbs, maxAbs, pad.l, m.w - pad.r);
   var rowH = (m.h - pad.t - pad.b) / rows.length;
@@ -1339,13 +1364,15 @@ function drawMovers() {
     var col = divergingColor(r.volChange, maxAbs);
     var xw = x(r.volChange) - x(0);
     g.appendChild(s('path', { d: hBarPath(x(0), yy, xw, bh, 4), fill: col }));
-    g.appendChild(s('text', { class: 'lbl', x: pad.l - 12, y: yy + bh - 3, 'text-anchor': 'end' }, truncate(r.name, 22)));
+    axisRowLabel(g, pad.l - 12, yy + bh - 3, r.name, 'zone', pad.l - 24);
     g.appendChild(s('text', {
       class: 'val', x: x(r.volChange) + (xw >= 0 ? 7 : -7), y: yy + bh - 3,
       'text-anchor': xw >= 0 ? 'start' : 'end'
     }, fmtPct(r.volChange, 0) + '  (' + r.nPrior + '→' + r.nRecent + ')'));
 
-    var hit = s('rect', { class: 'hit', x: pad.l - 145, y: pad.t + i * rowH, width: m.w - pad.l + 140, height: rowH, tabindex: 0 });
+    // full-width hit area — the label gutter is now sized to the chart, so a
+    // hardcoded offset would leave part of the row dead
+    var hit = s('rect', { class: 'hit', x: 0, y: pad.t + i * rowH, width: m.w, height: rowH, tabindex: 0 });
     bindTip(hit, function () {
       var mk = zoneMakeup(r.name, null, 3);
       return {
@@ -2349,7 +2376,8 @@ function drawDist() {
   if (!rows.length) return emptyChart(m, fmtInt(slice.length) + ' sales in view, but no ' +
     grainNoun(state.grain) + ' reaches ' + minSalesFor(state.grain) +
     ' sales — a quartile box on a handful of sales would mislead. Try a coarser detail level.');
-  var pad = { t: 24, r: 84, b: 34, l: 172 };
+  // the label gutter has to hold the zone name AND what it covers
+  var pad = { t: 24, r: 84, b: 34, l: Math.max(150, Math.min(340, Math.round(m.w * 0.30))) };
 
   var lo = Math.min.apply(null, rows.map(function (r) { return r.p10; }));
   var hi = Math.max.apply(null, rows.map(function (r) { return r.p90; }));
@@ -2372,7 +2400,7 @@ function drawDist() {
     g.appendChild(s('line', { x1: x(r.p10), x2: x(r.p90), y1: cy, y2: cy, stroke: MUTED, 'stroke-width': 2, 'stroke-linecap': 'round' }));
     g.appendChild(s('path', { d: hBarPath(x(r.p25), cy - bh / 2, x(r.p75) - x(r.p25), bh, 3), fill: ACCENT, opacity: 0.55 }));
     g.appendChild(s('circle', { cx: x(r.med), cy: cy, r: 4.2, fill: ACCENT_UI, stroke: SURFACE, 'stroke-width': 2 }));
-    g.appendChild(s('text', { class: 'lbl', x: pad.l - 12, y: cy + 4, 'text-anchor': 'end' }, truncate(r.name, 26)));
+    axisRowLabel(g, pad.l - 12, cy + 4, r.name, state.grain, pad.l - 24);
     g.appendChild(s('text', { class: 'val', x: m.w - pad.r + 10, y: cy + 4, 'text-anchor': 'start' }, fmtCompact(r.med)));
 
     var hit = s('rect', { class: 'hit', x: 0, y: pad.t + i * rowH, width: m.w, height: rowH, tabindex: 0 });
@@ -2419,7 +2447,7 @@ function drawPremium() {
 
   var m = mount('premChart', Math.max(200, show.length * 24 + 34));
   if (!show.length) return emptyChart(m);
-  var pad = { t: 8, r: 56, b: 22, l: 160 };
+  var pad = { t: 8, r: 56, b: 22, l: Math.max(140, Math.min(330, Math.round(m.w * 0.32))) };
   var maxAbs = Math.max.apply(null, show.map(function (r) { return Math.abs(r.prem); })) || 1;
   var x = linear(-maxAbs, maxAbs, pad.l, m.w - pad.r);
   var rowH = (m.h - pad.t - pad.b) / show.length;
@@ -2431,7 +2459,7 @@ function drawPremium() {
     var yv = pad.t + i * rowH + (rowH - bh) / 2;
     var col = divergingColor(r.prem, maxAbs);
     g.appendChild(s('path', { d: hBarPath(x(0), yv, x(r.prem) - x(0), bh, 4), fill: col }));
-    g.appendChild(s('text', { class: 'lbl', x: pad.l - 12, y: yv + bh - 2, 'text-anchor': 'end' }, truncate(r.name, 24)));
+    axisRowLabel(g, pad.l - 12, yv + bh - 2, r.name, state.grain, pad.l - 24);
     g.appendChild(s('text', {
       class: 'val', x: x(r.prem) + (r.prem >= 0 ? 7 : -7), y: yv + bh - 2,
       'text-anchor': r.prem >= 0 ? 'start' : 'end'
