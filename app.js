@@ -526,28 +526,47 @@ function divergingColor(v, maxAbs) {
 
 function registerTable(id, cols, rows) { TABLES[id] = { cols: cols, rows: rows }; }
 
+function openTable(btn) {
+  var id = btn.dataset.table, t = TABLES[id];
+  if (!t) return;
+  var wrap = el('div', 'tbl-scroll');
+  wrap.id = 'tbl-' + id;
+  wrap.style.marginTop = '12px';
+  wrap.style.maxHeight = '340px';
+  wrap.style.overflowY = 'auto';
+  wrap.appendChild(makeTable(t.cols, t.rows));
+  btn.parentNode.insertBefore(wrap, btn.nextSibling);
+  btn.textContent = 'Hide table';
+}
+
 function buildTableTwins() {
   var btns = document.querySelectorAll('.tbl-toggle');
   for (var i = 0; i < btns.length; i++) {
-    (function (btn) {
-      if (btn.dataset.wired) return;
+    var btn = btns[i];
+    if (!btn.dataset.wired) {
       btn.dataset.wired = '1';
-      btn.addEventListener('click', function () {
-        var id = btn.dataset.table;
-        var existing = document.getElementById('tbl-' + id);
-        if (existing) { existing.remove(); btn.textContent = 'Show table'; return; }
-        var t = TABLES[id];
-        if (!t) return;
-        var wrap = el('div', 'tbl-scroll');
-        wrap.id = 'tbl-' + id;
-        wrap.style.marginTop = '12px';
-        wrap.style.maxHeight = '340px';
-        wrap.style.overflowY = 'auto';
-        wrap.appendChild(makeTable(t.cols, t.rows));
-        btn.parentNode.insertBefore(wrap, btn.nextSibling);
-        btn.textContent = 'Hide table';
-      });
-    })(btns[i]);
+      (function (b) {
+        b.addEventListener('click', function () {
+          var existing = document.getElementById('tbl-' + b.dataset.table);
+          if (existing) { existing.remove(); b.textContent = 'Show table'; return; }
+          openTable(b);
+        });
+      })(btn);
+    }
+    // An open table lives outside the chart host, so a re-render leaves it
+    // untouched and showing the previous slice. Rebuild it from the data the
+    // chart was just drawn from, so the two can never disagree.
+    var open = document.getElementById('tbl-' + btn.dataset.table);
+    if (open) {
+      var t = TABLES[btn.dataset.table];
+      if (t) {
+        clear(open);
+        open.appendChild(makeTable(t.cols, t.rows));
+      } else {
+        open.remove();
+        btn.textContent = 'Show table';
+      }
+    }
   }
 }
 
@@ -751,6 +770,8 @@ function emptyChart(m) {
   var t = el('div', 'empty', 'No sales match the current filters.');
   clear(m.host);
   m.host.appendChild(t);
+  // drop the table twin too — it must never outlive the chart it mirrors
+  delete TABLES[m.host.id];
 }
 
 // ------------------------------------------------------------ price by year
@@ -1422,15 +1443,34 @@ function drawTreemap() {
 // MOMENTUM
 // ==========================================================================
 
-function grainControl(onChange) {
-  var box = el('div', 'chip-row');
-  [['zone', 'Settlement zones'], ['district', 'Districts'],
-   ['pcd', 'Postcode districts'], ['settlement', 'Villages']].forEach(function (g) {
-    var b = el('button', 'chip', g[1]);
-    b.setAttribute('aria-pressed', state.grain === g[0] ? 'true' : 'false');
-    b.addEventListener('click', function () { state.grain = g[0]; onChange(); });
-    box.appendChild(b);
-  });
+var GRAINS = [['zone', 'Settlement zones'], ['district', 'Districts'],
+              ['pcd', 'Postcode districts'], ['settlement', 'Villages']];
+
+// Build the grain control once per card and update it in place on every later
+// render. It lives in the card head, which is NOT cleared between renders, so
+// re-appending it stacked up a fresh row of chips on every grain click and
+// every filter change.
+function mountGrainControl(head, onChange) {
+  var box = head.querySelector('.grain-control');
+  if (!box) {
+    box = el('div', 'chip-row grain-control');
+    box.style.marginTop = '10px';
+    GRAINS.forEach(function (g) {
+      var b = el('button', 'chip', g[1]);
+      b.dataset.grain = g[0];
+      b.addEventListener('click', function () {
+        if (state.grain === g[0]) return;
+        state.grain = g[0];
+        onChange();
+      });
+      box.appendChild(b);
+    });
+    head.appendChild(box);
+  }
+  var chips = box.querySelectorAll('.chip');
+  for (var i = 0; i < chips.length; i++) {
+    chips[i].setAttribute('aria-pressed', chips[i].dataset.grain === state.grain ? 'true' : 'false');
+  }
   return box;
 }
 
@@ -1443,6 +1483,7 @@ function renderMomentum() {
     clear($('scatter')); clear($('moversTable'));
     $('scatter').appendChild(el('div', 'empty', 'Not enough history in this slice.'));
     $('moversTable').appendChild(el('div', 'empty', 'Momentum needs a longer year range than the one selected.'));
+    mountGrainControl(sub.parentNode, renderMomentum);
     drawBump();
     return;
   }
@@ -1450,11 +1491,9 @@ function renderMomentum() {
   sub.appendChild(document.createTextNode(
     'Each bubble is one ' + grainNoun(state.grain) + ', sized by how many £550k+ sales it has seen in the last ' +
     w.w + ' months (' + monthLabel(w.recent0) + '–' + monthLabel(w.recent1) + '). Right means more sales than the ' +
-    w.w + ' months before; up means a higher median. Areas with fewer than ' + MIN_AREA_SALES +
+    w.w + ' months before; up means a higher median. Areas with fewer than ' + minSalesFor(state.grain) +
     ' sales in the slice are left out as too thin to read.'));
-  var gc = grainControl(renderMomentum);
-  gc.style.marginTop = '10px';
-  sub.parentNode.appendChild(gc);
+  mountGrainControl(sub.parentNode, renderMomentum);
 
   drawScatter(mo);
   drawMoversTable(mo);
@@ -1753,15 +1792,7 @@ function areaStats(grain, minN) {
 function drawDist() {
   var host = $('distChart');
   var head = host.parentNode.querySelector('.card-head');
-  if (!head.querySelector('.chip-row')) {
-    var gc = grainControl(function () { renderValue(); });
-    gc.style.marginTop = '10px';
-    head.appendChild(gc);
-  } else {
-    var chips = head.querySelectorAll('.chip-row .chip');
-    var keys = ['zone', 'district', 'pcd', 'settlement'];
-    for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-pressed', state.grain === keys[i] ? 'true' : 'false');
-  }
+  mountGrainControl(head, renderValue);
 
   var all = areaStats(state.grain);
   var capped = all.length > MAX_DIST_ROWS;
