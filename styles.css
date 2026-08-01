@@ -345,6 +345,9 @@ select { padding-right: 26px; }
 
 .grid { display: grid; gap: 16px; }
 .g-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* the movers chart carries long zone names AND a value beyond each bar, so it
+   needs more room than the price chart beside it */
+.g-2-uneven { grid-template-columns: minmax(0, 1fr) minmax(0, 1.55fr); }
 .g-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .g-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .g-map { grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); }
@@ -607,7 +610,7 @@ tr.history-row td { background: var(--surface-2); padding: 0; }
 }
 @media (max-width: 780px) {
   :root { --gutter: 18px; }
-  .g-2, .g-3, .g-4, .tiles { grid-template-columns: minmax(0, 1fr); }
+  .g-2, .g-2-uneven, .g-3, .g-4, .tiles { grid-template-columns: minmax(0, 1fr); }
   /* the year block is 388px wide and could not wrap, so the whole page
      scrolled sideways on a phone */
   .controls-inner { gap: 8px 12px; }

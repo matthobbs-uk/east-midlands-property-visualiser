@@ -667,21 +667,29 @@ function areaLabelText(name, grain, maxChars) {
 
 function axisRowLabel(g, xEnd, y, name, grain, widthBudget) {
   var t = s('text', { class: 'lbl', x: xEnd, y: y, 'text-anchor': 'end' });
-  var mk = (grain === 'zone') ? zoneMakeup(name, null, 2) : null;
-  var makeup = mk && mk.text ? mk.top.join(', ') : '';
   var charW = 5.45;
   var maxChars = Math.max(10, Math.floor(widthBudget / charW));
 
-  if (!makeup || maxChars < name.length + 7) {
+  // Try two settlements, then one, then none. Degrading the detail beats
+  // truncating the name — "Soar Valley Out · Sutton Boning…" tells you less
+  // than "Soar Valley Out · Sutton Bonington".
+  var makeup = '';
+  if (grain === 'zone') {
+    var mk = zoneMakeup(name, null, 2);
+    if (mk.top.length) {
+      var two = mk.top.join(', ');
+      if (name.length + 3 + two.length <= maxChars) makeup = two;
+      else if (name.length + 3 + mk.top[0].length <= maxChars) makeup = mk.top[0];
+    }
+  }
+
+  if (!makeup) {
     t.appendChild(document.createTextNode(truncate(name, maxChars)));
     g.appendChild(t);
     return t;
   }
-  var room = Math.max(4, maxChars - name.length - 3);
-  var n1 = s('tspan', { fill: '#a9aeb8' }, name);
-  var n2 = s('tspan', { fill: '#737a86' }, ' · ' + truncate(makeup, room));
-  t.appendChild(n1);
-  t.appendChild(n2);
+  t.appendChild(s('tspan', { fill: '#a9aeb8' }, name));
+  t.appendChild(s('tspan', { fill: '#737a86' }, ' · ' + makeup));
   g.appendChild(t);
   return t;
 }
@@ -1375,8 +1383,12 @@ function drawMovers() {
 
   var m = mount('moversChart', Math.max(200, rows.length * 26 + 40));
   var pad = { t: 8, r: 60, b: 24, l: Math.max(140, Math.min(300, Math.round(m.w * 0.36))) };
+  // The value sits beyond the end of its bar, so the bar must not be allowed to
+  // reach the edge of the plot — a -56% bar used to put "-56% (27→12)" straight
+  // on top of the row title.
+  var VALW = 104;
   var maxAbs = Math.max.apply(null, rows.map(function (r) { return Math.abs(r.volChange); }));
-  var x = linear(-maxAbs, maxAbs, pad.l, m.w - pad.r);
+  var x = linear(-maxAbs, maxAbs, pad.l + VALW, m.w - pad.r - VALW);
   var rowH = (m.h - pad.t - pad.b) / rows.length;
   var bh = Math.min(16, rowH - 6);
 
@@ -2489,7 +2501,8 @@ function drawPremium() {
   if (!show.length) return emptyChart(m);
   var pad = { t: 8, r: 56, b: 22, l: Math.max(150, Math.min(330, Math.round(m.w * 0.38))) };
   var maxAbs = Math.max.apply(null, show.map(function (r) { return Math.abs(r.prem); })) || 1;
-  var x = linear(-maxAbs, maxAbs, pad.l, m.w - pad.r);
+  var PVALW = 52;   // room for the value beyond each bar end, both directions
+  var x = linear(-maxAbs, maxAbs, pad.l + PVALW, m.w - pad.r - PVALW);
   var rowH = (m.h - pad.t - pad.b) / show.length;
   var bh = Math.min(14, rowH - 5);
 
