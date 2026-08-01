@@ -46,9 +46,12 @@
 
     <div class="ctl">
       <span class="ctl-label">Area</span>
-      <input type="search" id="fVillage" class="txt" list="villageList" autocomplete="off"
-             placeholder="Village, zone or postcode" aria-label="Village, settlement zone or postcode district">
-      <datalist id="villageList"></datalist>
+      <div class="area-box">
+        <input type="search" id="fVillage" class="txt" autocomplete="off" role="combobox"
+               aria-expanded="false" aria-autocomplete="list" aria-controls="areaMenu"
+               placeholder="Village, zone or postcode" aria-label="Village, settlement zone or postcode district">
+        <div class="area-menu" id="areaMenu" role="listbox" hidden></div>
+      </div>
     </div>
 
     <div class="ctl">

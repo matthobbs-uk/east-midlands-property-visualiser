@@ -112,6 +112,12 @@ You can audit it from the browser console: `EM_DEBUG.rsi.level`.
   never capped, so genuine country houses such as Normanton Manor at £4.55m stay.
 - **Three postcode districts vanish as a result** — DN17, LE67 and the non-geographic NG80 — because
   every £550k+ record they held was non-residential. That drops the map from 51 shapes to 49.
+- **Picking an area: "Louth" and "Louth Wolds" are not the same thing.** A *village* is the
+  settlement itself. A *settlement zone* is a group of villages that trade as one market — and it
+  usually **excludes** the town it is named after. Louth the village is 73 sales; Louth Wolds is 80
+  sales across 30 surrounding villages with **zero overlap**. Pick the village for the town itself.
+  Where a zone contains only one settlement it is suppressed from the picker entirely, because
+  "Louth Town" was the same 73 sales as "Louth" under a second name.
 - **"Settlement zone" names are the source data's, not official places — and one is a trap.**
   **"Town" is not a town.** It is a category meaning "the town this district revolves around", so it
   reads as Stamford and the Deepings (791 sales) in South Kesteven, Oakham and Uppingham in Rutland,

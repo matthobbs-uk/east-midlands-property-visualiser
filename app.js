@@ -3248,6 +3248,7 @@ function initControls() {
   var vsel = $('fVillage');
   var villageTimer = null;
   vsel.addEventListener('input', function () {
+    openAreaMenu(vsel.value);
     clearTimeout(villageTimer);
     villageTimer = setTimeout(function () {
       var typed = vsel.value.trim();
@@ -3263,7 +3264,26 @@ function initControls() {
         state.village = typed.toLowerCase();
       }
       refresh();
-    }, 180);
+    }, 220);
+  });
+  vsel.addEventListener('focus', function () { openAreaMenu(vsel.value); });
+  vsel.addEventListener('blur', function () { setTimeout(closeAreaMenu, 120); });
+  vsel.addEventListener('keydown', function (ev) {
+    var menu = $('areaMenu');
+    var opts = menu.querySelectorAll('.area-opt');
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      if (menu.hidden) { openAreaMenu(vsel.value); return; }
+      ev.preventDefault();
+      var next = areaHi + (ev.key === 'ArrowDown' ? 1 : -1);
+      if (next < 0) next = opts.length - 1;
+      if (next >= opts.length) next = 0;
+      setAreaHi(next);
+    } else if (ev.key === 'Enter') {
+      if (!menu.hidden && areaHi >= 0 && opts[areaHi]) { ev.preventDefault(); opts[areaHi].dispatchEvent(new MouseEvent('mousedown')); }
+      else closeAreaMenu();
+    } else if (ev.key === 'Escape') {
+      closeAreaMenu();
+    }
   });
 
   $('dlCsv').addEventListener('click', downloadCsv);
@@ -3442,6 +3462,7 @@ function renderActive() {
 // when one of those filters actually changes — 700-odd nodes per keystroke would
 // be wasteful.
 var villageSig = null;
+var AREA_ENTRIES = [];
 function rebuildVillageList() {
   var sig = [state.y0, state.y1, state.county, state.district, state.ptype,
              state.search, state.newBuild, Object.keys(state.bands).sort().join()].join('|');
@@ -3450,7 +3471,7 @@ function rebuildVillageList() {
 
   // one list across villages, zones, postcode districts and sectors, so a single
   // box scopes to any of the units the charts actually aggregate by
-  var counts = {};
+  var counts = {}, settleHome = {};
   for (var i = 0; i < N; i++) {
     if (!passes(i, true)) continue;
     for (var k = 0; k < AREA_KINDS.length; k++) {
@@ -3459,6 +3480,8 @@ function rebuildVillageList() {
       if (!counts[kind]) counts[kind] = {};
       counts[kind][nm] = (counts[kind][nm] || 0) + 1;
     }
+    var sn = DICT.settlement[C.settlement[i]];
+    if (!settleHome[sn]) settleHome[sn] = { d: DICT.district[C.district[i]], z: DICT.zone[C.zone[i]] };
   }
   // keyed by kind then name, so an area name containing a space or any
   // separator character cannot corrupt the lookup
@@ -3471,24 +3494,116 @@ function rebuildVillageList() {
   entries.sort(function (a, b) { return b.n - a.n || a.name.localeCompare(b.name); });
 
   AREA_INDEX = {};
-  var list = $('villageList');
-  clear(list);
+  AREA_ENTRIES = [];
   entries.forEach(function (e) {
+    if (e.kind === 'zone') {
+      // A zone holding exactly one settlement is that settlement under another
+      // name — "Louth Town" and "Louth" are the same 73 sales. Offering both
+      // just asks the reader to pick between identical things.
+      var mk = zoneMakeup(e.name, null, 4);
+      if (mk.names.length === 1) return;
+      e.sub = 'covers ' + mk.text;
+    } else if (e.kind === 'sector') {
+      e.sub = 'part of postcode district ' + e.name.split(' ')[0];
+    } else if (e.kind === 'pcd') {
+      e.sub = 'postal area, may cross district lines';
+    } else {
+      var home = settleHome[e.name];
+      if (home) {
+        // naming the zone is only useful when it groups this village with others
+        var zm = zoneMakeup(home.z, null, 2);
+        e.sub = 'in ' + home.d + (zm.names.length > 1 ? ' · ' + home.z + ' zone' : '');
+      } else e.sub = '';
+    }
+    var lower = e.name.toLowerCase();
     // first kind to claim a name wins the plain-text lookup; villages are first
     // in AREA_KINDS so "Oakham" resolves to the village, not a zone of that name
-    var lower = e.name.toLowerCase();
     if (!AREA_INDEX[lower]) AREA_INDEX[lower] = e;
-    var o = document.createElement('option');
-    o.value = e.name;
-    var extra = '';
-    if (e.kind === 'zone') {
-      var mk = zoneMakeup(e.name, null, 3);
-      if (mk.text) extra = ' — ' + mk.top.join(', ');
-    }
-    o.label = e.name + extra + ' · ' + areaKindLabel(e.kind) + ', ' + e.n + ' sale' + (e.n === 1 ? '' : 's');
-    list.appendChild(o);
+    AREA_ENTRIES.push(e);
   });
 }
+
+// ---- the suggestion menu -------------------------------------------------
+var areaHi = -1;
+function areaMatches(q) {
+  q = q.trim().toLowerCase();
+  if (!q) return AREA_ENTRIES.slice(0, 40);
+  var exact = [], starts = [], contains = [];
+  for (var i = 0; i < AREA_ENTRIES.length; i++) {
+    var e = AREA_ENTRIES[i], nm = e.name.toLowerCase();
+    if (nm === q) { exact.push(e); continue; }
+    var at = nm.indexOf(q);
+    if (at === 0) starts.push(e);
+    else if (at > 0) contains.push(e);
+  }
+  // typing "louth" wants Louth, not Louth Wolds — shortest name is the most
+  // precise match, and only then does size decide
+  starts.sort(function (a, b) { return a.name.length - b.name.length || b.n - a.n; });
+  return exact.concat(starts, contains);
+}
+function closeAreaMenu() {
+  var menu = $('areaMenu');
+  menu.hidden = true;
+  areaHi = -1;
+  $('fVillage').setAttribute('aria-expanded', 'false');
+}
+function openAreaMenu(q) {
+  var menu = $('areaMenu');
+  var hits = areaMatches(q);
+  clear(menu);
+  if (!hits.length) {
+    menu.appendChild(el('div', 'a-empty', 'No area matches “' + q + '” under the current filters.'));
+  }
+  hits.slice(0, 30).forEach(function (e, i) {
+    var b = el('button', 'area-opt');
+    b.type = 'button';
+    b.setAttribute('role', 'option');
+    var line = el('div');
+    line.appendChild(el('span', 'a-name', e.name));
+    line.appendChild(el('span', 'a-kind', areaKindLabel(e.kind)));
+    b.appendChild(line);
+    var sub = el('span', 'a-sub');
+    sub.appendChild(el('span', 'a-n', fmtInt(e.n) + ' sale' + (e.n === 1 ? '' : 's')));
+    if (e.sub) sub.appendChild(document.createTextNode(' · ' + e.sub));
+    b.appendChild(sub);
+    b.addEventListener('mousedown', function (ev) {
+      ev.preventDefault();          // keep focus so blur does not race the click
+      pickArea(e);
+    });
+    b.addEventListener('pointerenter', function () { setAreaHi(i); });
+    menu.appendChild(b);
+  });
+  if (hits.length > 30) {
+    menu.appendChild(el('div', 'a-more', fmtInt(hits.length - 30) + ' more — keep typing to narrow'));
+  }
+  menu.hidden = false;
+  // the Area control sits near the right edge of the filter bar, so a
+  // left-anchored menu runs off screen — flip it when it would
+  menu.style.left = '0';
+  menu.style.right = 'auto';
+  var r = menu.getBoundingClientRect();
+  if (r.right > window.innerWidth - 10) {
+    menu.style.left = 'auto';
+    menu.style.right = '0';
+  }
+  areaHi = -1;
+  $('fVillage').setAttribute('aria-expanded', 'true');
+}
+function setAreaHi(i) {
+  var opts = $('areaMenu').querySelectorAll('.area-opt');
+  for (var k = 0; k < opts.length; k++) opts[k].classList.toggle('on', k === i);
+  areaHi = i;
+  if (opts[i]) opts[i].scrollIntoView({ block: 'nearest' });
+}
+function pickArea(e) {
+  $('fVillage').value = e.name;
+  state.area = { kind: e.kind, name: e.name };
+  state.village = '';
+  if (state.grain === e.kind) state.grain = 'settlement';
+  closeAreaMenu();
+  refresh();
+}
+
 var AREA_INDEX = {};
 var PAINT_NEW_BUILD = null;
 

@@ -188,6 +188,50 @@ select { padding-right: 26px; }
 .txt:focus { outline: none; border-color: var(--accent); }
 .txt::placeholder { color: var(--ink-3); }
 
+/* A native <datalist> truncates its labels to the width of the input, which
+   hid exactly the text that tells two similar areas apart. Custom menu. */
+.area-box { position: relative; display: flex; }
+.area-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  min-width: 340px;
+  max-width: 460px;
+  max-height: 330px;
+  overflow-y: auto;
+  background: #1e232b;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.6);
+  z-index: 80;
+  padding: 5px;
+}
+.area-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.area-opt:hover, .area-opt.on { background: var(--surface-3); }
+.area-opt .a-name { color: var(--ink); font-size: 13px; font-weight: 650; }
+.area-opt .a-kind {
+  color: var(--accent); font-size: 10px; font-weight: 650; letter-spacing: 0.07em;
+  text-transform: uppercase; margin-left: 8px;
+}
+.area-opt .a-sub {
+  display: block; color: var(--ink-3); font-size: 11.5px; margin-top: 2px; line-height: 1.35;
+}
+.area-opt .a-n { color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.area-menu .a-empty { color: var(--ink-3); font-size: 12.5px; padding: 10px; }
+.area-menu .a-more { color: var(--ink-3); font-size: 11.5px; padding: 7px 10px 4px; border-top: 1px solid var(--rule); margin-top: 4px; }
+
+@media (max-width: 780px) { .area-menu { min-width: 0; width: 100%; max-width: none; } }
+
 .btn:hover, .chip:hover, select:hover { border-color: #40474f; background: var(--surface-3); }
 
 .chip[aria-pressed="true"] {
